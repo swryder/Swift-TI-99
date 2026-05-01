@@ -6,8 +6,13 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		E4C3BC4E2FA5640800E6F73A /* Swift99a 1.3.dmg in Resources */ = {isa = PBXBuildFile; fileRef = E4C3BC4D2FA5640800E6F73A /* Swift99a 1.3.dmg */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		E413EF912F82F24C00BB2C16 /* Swift99a.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Swift99a.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		E4C3BC4D2FA5640800E6F73A /* Swift99a 1.3.dmg */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Swift99a 1.3.dmg"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -33,6 +38,7 @@
 			isa = PBXGroup;
 			children = (
 				E413EF932F82F24C00BB2C16 /* Swift99a */,
+				E4C3BC4D2FA5640800E6F73A /* Swift99a 1.3.dmg */,
 				E413EF922F82F24C00BB2C16 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -109,6 +115,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E4C3BC4E2FA5640800E6F73A /* Swift99a 1.3.dmg in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
