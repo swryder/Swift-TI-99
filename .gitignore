@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Xcode build output
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Swift Package Manager
+.build/
+Packages/
+Package.resolved
+
+# Third-party ROM and disk image collections (bring your own)
+Cart ROM Dumps/
+Ti-Cartridges/
+TIDISKS/
+FinalGROM99/
