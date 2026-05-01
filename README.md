@@ -81,8 +81,8 @@ No third-party dependencies. Pure Swift, SwiftUI, AppKit, and Metal.
 ## Building & running
 
 ```bash
-git clone <your-fork-url>
-cd "Swift99a Source"
+git clone https://github.com/swryder/Swift-TI-99.git
+cd Swift-TI-99
 open Swift99a.xcodeproj
 ```
 
