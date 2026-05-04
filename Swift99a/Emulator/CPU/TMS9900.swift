@@ -63,6 +63,9 @@ final class TMS9900: Peripheral {
     /// Running total of CPU cycles consumed (for MHz calculation)
     var totalCycleCount: Int = 0
 
+    /// TEMP debug counter for the cassette ISR's wait-loop compare.
+    static var cDebugLogCount: Int = 0
+
     // Pre-computed status flag lookup tables. These avoid repeated branching
     // in the hot path by mapping a result value directly to its status flags.
     // wStatusLookup: indexed by 16-bit word result (65536 entries)
@@ -160,10 +163,18 @@ final class TMS9900: Peripheral {
                         triggerInterrupt(level: -1)
                         continue
                     } else {
-                        let minLevel = Int(ST & 0x000F)
+                        // Per TMS9900 spec, the ST mask is the *highest* level
+                        // accepted — interrupts fire when level <= mask. The
+                        // previous `0..<minLevel` excluded the boundary, so e.g.
+                        // LIMI #1 only allowed level 0; the VDP's level-1
+                        // interrupt was permanently masked. The cassette ROM
+                        // loop at >1574 waits for the level-1 ISR (which calls
+                        // the cassette decoder at >1404), so this off-by-one
+                        // froze the read entirely.
+                        let mask = Int(ST & 0x000F)
                         let ints = core.getIntLevels()
                         var triggered = false
-                        for idx in 0..<minLevel {
+                        for idx in 0...mask {
                             if ints & (1 << UInt32(idx)) != 0 {
                                 triggerInterrupt(level: idx)
                                 triggered = true

@@ -352,7 +352,17 @@ class EmulatorSystem {
     func requestNMI() { nmiReq = true }
     func clearNMI() { nmiReq = false }
 
+    /// Optional hook invoked at every CPU interrupt-pending check.
+    /// Lets the TMS9901 refresh its timer state (and therefore the level-1
+    /// request line) using the CPU's fine-grained cycle count, rather than
+    /// only at emulator-slice boundaries. Without this, a TMS9901 timer
+    /// loaded with a small value (e.g. 1 tick = 21 µs, which the cassette
+    /// ROM does for FSK oversampling) only fires once per millisecond
+    /// instead of ~47 times per millisecond.
+    var preInterruptCheck: (() -> Void)?
+
     func interruptPending() -> Bool {
+        preInterruptCheck?()
         return intReqLevel != 0 || nmiReq
     }
 

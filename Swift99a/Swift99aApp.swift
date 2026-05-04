@@ -40,6 +40,7 @@ struct Swift99aApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var emulator = Emulator()
     private let memoryMapController = MemoryMapWindowController()
+    private let cassetteTransportController = CassetteTransportWindowController()
 
     init() {
         // Disable window tabbing before any windows are created
@@ -89,6 +90,24 @@ struct Swift99aApp: App {
                         }
                     }
                 }
+
+                Divider()
+
+                // Cassette tape (CS1)
+                Button(emulator.cassetteName != nil
+                       ? "Eject Cassette (\(emulator.cassetteName!))"
+                       : "Load Cassette Tape…") {
+                    if emulator.cassetteName != nil {
+                        emulator.ejectCassette()
+                    } else {
+                        openCassetteFile()
+                    }
+                }
+
+                Button("Show Cassette Transport") {
+                    cassetteTransportController.showWindow(emulator: emulator)
+                }
+                .disabled(emulator.cassetteName == nil)
 
                 Divider()
 
@@ -266,6 +285,33 @@ struct Swift99aApp: App {
 
         if panel.runModal() == .OK, let url = panel.url {
             emulator.loadSpeechROM(from: url)
+        }
+    }
+
+    /// Opens a panel for cassette tape files. Supports Win994a's `.titape`
+    /// format and audio recordings of real TI cassettes (WAV / MP3 / etc.).
+    /// Both load into the same internal 16 kHz PCM buffer.
+    private func openCassetteFile() {
+        let panel = NSOpenPanel()
+        panel.title = "Load Cassette Tape"
+        panel.message = "Select a tape file (.titape, .wav, .mp3)"
+        panel.allowedContentTypes = [
+            .init(filenameExtension: "titape")!,
+            .init(filenameExtension: "TITape")!,
+            .init(filenameExtension: "wav")!,
+            .init(filenameExtension: "wave")!,
+            .init(filenameExtension: "mp3")!,
+            .init(filenameExtension: "m4a")!,
+            .init(filenameExtension: "aif")!,
+            .init(filenameExtension: "aiff")!,
+            .data
+        ]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+
+        if panel.runModal() == .OK, let url = panel.url {
+            emulator.loadCassette(from: url)
+            cassetteTransportController.showWindow(emulator: emulator)
         }
     }
 

@@ -30,6 +30,7 @@ final class AudioEngine {
     private var playerNode: AVAudioPlayerNode?
     private var audioSource: AudioSource?
     private var speechSource: AudioSource?
+    private var cassetteSource: AudioSource?
     private let sampleRate: Double = 44100
     private let bufferSize: AVAudioFrameCount = 512
     /// Number of PCM buffers kept in flight on the player node. Three is
@@ -43,11 +44,12 @@ final class AudioEngine {
     /// its completion handler refills it and reschedules it.
     private var pcmBuffers: [AVAudioPCMBuffer] = []
 
-    /// Pre-allocated Int16 scratch arrays for source fill + speech mix.
-    /// AVAudioPlayerNode delivers buffer-completion callbacks on a serial
-    /// queue, so a single shared pair is safe — fills never overlap.
+    /// Pre-allocated Int16 scratch arrays for source fill + speech / cassette
+    /// mix. AVAudioPlayerNode delivers buffer-completion callbacks on a serial
+    /// queue, so a single shared set is safe — fills never overlap.
     private var psgInt16: [Int16] = []
     private var speechInt16: [Int16] = []
+    private var cassetteInt16: [Int16] = []
 
     func initialize() -> Bool {
         engine = AVAudioEngine()
@@ -71,6 +73,7 @@ final class AudioEngine {
         }
         psgInt16 = [Int16](repeating: 0, count: Int(bufferSize))
         speechInt16 = [Int16](repeating: 0, count: Int(bufferSize))
+        cassetteInt16 = [Int16](repeating: 0, count: Int(bufferSize))
 
         do {
             try engine.start()
@@ -90,6 +93,10 @@ final class AudioEngine {
 
     func setSpeechSource(_ source: AudioSource) {
         self.speechSource = source
+    }
+
+    func setCassetteSource(_ source: AudioSource) {
+        self.cassetteSource = source
     }
 
     /// Fill and schedule every buffer in the pool exactly once. Subsequent
@@ -129,6 +136,21 @@ final class AudioEngine {
                 }
                 for i in 0..<samples {
                     let mixed = Int32(psgInt16[i]) + Int32(speechInt16[i])
+                    psgInt16[i] = Int16(max(-32768, min(32767, mixed)))
+                }
+            }
+
+            // Mix cassette tape audio if available (only emits when motor is
+            // on and the audio gate is open — silent at all other times).
+            if let cassette = cassetteSource {
+                cassetteInt16.withUnsafeMutableBytes { rawBuf in
+                    cassette.fillAudioBuffer(
+                        buffer: rawBuf.baseAddress!,
+                        bufferSize: samples * 2,
+                        samples: samples)
+                }
+                for i in 0..<samples {
+                    let mixed = Int32(psgInt16[i]) + Int32(cassetteInt16[i])
                     psgInt16[i] = Int16(max(-32768, min(32767, mixed)))
                 }
             }

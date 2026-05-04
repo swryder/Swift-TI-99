@@ -53,6 +53,9 @@ class TI994A: EmulatorSystem {
     // TMS9901 Programmable Systems Interface (interrupt controller / I/O)
     var pTMS9901: TMS9901?
 
+    // Cassette tape interface (driven by TMS9901 cassette CRU bits)
+    var pCassette: Cassette?
+
     override init() {
         super.init()
     }
@@ -170,12 +173,22 @@ class TI994A: EmulatorSystem {
         guard pTMS9901!.initialize(index: 0) else { return false }
         pTMS9901!.vdp = pVDP
 
-        // Map TMS9901 CRU bits 0-2 for read and write
-        // These are mirrored every 32 bits through the 0x000-0x7FF range
-        // (the console ROM accesses them with R12=0, so CRU base = 0)
+        // Map TMS9901 CRU bits, mirrored every 32 bits through 0x000-0x7FF.
+        // - Reads at bits 0-2 (clock mode / peripheral INT / VDP INT) go to
+        //   the chip. Reads at bits 3-10 are keyboard rows and are claimed
+        //   below; we leave them to the keyboard.
+        // - Writes at bits 0-15 ALL go to the chip — they manipulate the
+        //   interrupt mask in I/O mode (bits 1-15) or the timer value in
+        //   clock mode. Without this, the cassette ROM's SBO 3 (timer ack)
+        //   and the LDCR that loads the timer value were silently dropped:
+        //   the ROM's clock-mode write of `>0011` to load the timer would
+        //   only land bits 0-2 (giving an apparent timerInitial=1 instead
+        //   of 17), and the ack of CRU bit 3 would never reach our latch.
         for idx in stride(from: 0, to: 0x800, by: 32) {
             for off in 0...2 {
                 _ = claimIORead(sysAddr: idx + off, peripheral: pTMS9901!, periphAddr: off)
+            }
+            for off in 0...15 {
                 _ = claimIOWrite(sysAddr: idx + off, peripheral: pTMS9901!, periphAddr: off)
             }
         }
@@ -193,6 +206,22 @@ class TI994A: EmulatorSystem {
             // Bit 17 read (9901 timer related)
             _ = claimIORead(sysAddr: idx + 17, peripheral: pKey!, periphAddr: 17)
         }
+
+        // TMS9901 cassette CRU bits — bits 22-25 (write) and 27 (read).
+        // Mapped after the keyboard mirror so the bit-27 read claim wins
+        // over the keyboard's stride-20 mirror at byte 27.
+        for idx in stride(from: 0, to: 0x800, by: 32) {
+            for off in 22...25 {
+                _ = claimIOWrite(sysAddr: idx + off, peripheral: pTMS9901!, periphAddr: off)
+            }
+            _ = claimIORead(sysAddr: idx + 27, peripheral: pTMS9901!, periphAddr: 27)
+        }
+
+        // Cassette device — observes the TMS9901 cassette flags, drives CDIN,
+        // and mixes a synthesised tape signal into the speaker when motor + gate are on.
+        pCassette = Cassette()
+        pCassette!.tms9901 = pTMS9901
+        pTMS9901!.cassette = pCassette
 
         // Speech synthesizer: read 0x9000-0x93FF, write 0x9400-0x97FF (even addresses)
         pSpeech = TMS5220(core: self)
@@ -238,6 +267,18 @@ class TI994A: EmulatorSystem {
         pCPU = TMS9900(core: self)
         guard pCPU!.initialize(index: 0) else { return false }
 
+        // Cassette derives sub-microsecond CDIN timestamps from CPU cycles —
+        // do this hookup after the CPU exists.
+        pCassette?.cpu = pCPU
+        pTMS9901?.cpu = pCPU
+
+        // Refresh the TMS9901 timer state at every CPU interrupt-pending
+        // check. Without this hook, a fast timer (e.g. cassette FSK
+        // oversampling at 21 µs) only fires once per emulator slice.
+        preInterruptCheck = { [weak self] in
+            self?.pTMS9901?.refreshInterruptRequest()
+        }
+
         // Audio engine (display buffer is set by Emulator)
         audioEngine = AudioEngine()
 
@@ -257,6 +298,7 @@ class TI994A: EmulatorSystem {
         _ = pDiskDSR?.cleanup()
         _ = pSpeech?.cleanup()
         _ = pTMS9901?.cleanup()
+        pCassette?.eject()
 
         pCPU = nil
         pVDP = nil
@@ -271,6 +313,7 @@ class TI994A: EmulatorSystem {
         pDiskDSR = nil
         pSpeech = nil
         pTMS9901 = nil
+        pCassette = nil
 
         memorySpaceRead = []
         memorySpaceWrite = []
@@ -296,12 +339,14 @@ class TI994A: EmulatorSystem {
         // before it tries to consume them.
         _ = pSpeech?.operate(timestamp: currentTimestamp)
 
-        // Route VDP interrupt to CPU (level 1)
-        if let vdp = pVDP, vdp.isIntActive() {
-            requestInt(level: 1)
-        } else {
-            clearInt(level: 1)
-        }
+        // The TMS9901 handles level-1 interrupt routing for both VDP and
+        // its own internal timer (gated by the chip's CRU mask bits 2 and 3
+        // respectively, per Classic99). Run it AFTER the VDP so the latest
+        // VDP INT pin state is what gets sampled.
+        _ = pTMS9901?.operate(timestamp: currentTimestamp)
+
+        // Advance cassette tape position when motor #1 is on.
+        pCassette?.operate(timestamp: currentTimestamp)
 
         // Notify memory map visualization (CPU-sync mode)
         memoryMapCallback?()

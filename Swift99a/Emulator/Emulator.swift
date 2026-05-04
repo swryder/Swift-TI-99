@@ -93,6 +93,8 @@ final class Emulator: ObservableObject {
     @Published var cartridgeName: String?
     @Published var diskNames: [Int: String] = [:]  // drive number -> disk name
     @Published var speechROMLoaded: Bool = false
+    @Published var cassetteName: String?
+    @Published var cassetteTransportState: CassetteTransportState = .stopped
 
     // Speed and performance display
     @Published var speedMode: SpeedMode = .realTime
@@ -149,6 +151,9 @@ final class Emulator: ObservableObject {
             }
             if let speech = system.pSpeech {
                 audio.setSpeechSource(speech)
+            }
+            if let cassette = system.pCassette {
+                audio.setCassetteSource(cassette)
             }
         }
 
@@ -461,6 +466,54 @@ final class Emulator: ObservableObject {
         DispatchQueue.main.async {
             self.diskNames.removeValue(forKey: drive)
         }
+    }
+
+    // MARK: - Cassette Tape
+
+    func loadCassette(from url: URL) {
+        do {
+            let image = try CassetteImage.load(from: url)
+            emulatorQueue.sync {
+                system.pCassette?.load(image: image)
+            }
+            DispatchQueue.main.async {
+                self.cassetteName = image.displayName
+                self.cassetteTransportState = .stopped
+            }
+        } catch {
+            print("[Swift 99/a] Failed to load cassette: \(error.localizedDescription)")
+            DispatchQueue.main.async {
+                let alert = NSAlert()
+                alert.messageText = "Could Not Load Cassette Tape"
+                alert.informativeText = error.localizedDescription
+                alert.alertStyle = .warning
+                alert.runModal()
+            }
+        }
+    }
+
+    func ejectCassette() {
+        emulatorQueue.sync {
+            system.pCassette?.eject()
+        }
+        DispatchQueue.main.async {
+            self.cassetteName = nil
+            self.cassetteTransportState = .stopped
+        }
+    }
+
+    func playCassette() {
+        emulatorQueue.sync { system.pCassette?.play() }
+        DispatchQueue.main.async { self.cassetteTransportState = .play }
+    }
+
+    func stopCassette() {
+        emulatorQueue.sync { system.pCassette?.stop() }
+        DispatchQueue.main.async { self.cassetteTransportState = .stopped }
+    }
+
+    func rewindCassette() {
+        emulatorQueue.sync { system.pCassette?.rewind() }
     }
 
     // MARK: - Speech ROM

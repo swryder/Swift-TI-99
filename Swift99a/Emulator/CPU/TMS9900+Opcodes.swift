@@ -353,6 +353,12 @@ extension TMS9900 {
         setST(romword(S: WP &+ 30))
         setPC(romword(S: WP &+ 28))
         setWP(romword(S: WP &+ 26))
+        // Per TMS9900 spec the next instruction in the returned context runs
+        // before another interrupt can be recognised. Without this, an ISR
+        // that returns while its interrupt source is still asserted (e.g. VDP
+        // INT held until the status register is read) is taken again
+        // immediately, before the returned-to code can clear the source.
+        skip_interrupt = 2
     }
 
     func op_x() {
@@ -410,10 +416,23 @@ extension TMS9900 {
     func op_c() {
         addCycles(14)
         decodeFormatI()
+        let savedTd = Td, savedTs = Ts, savedD = D, savedS = S
         fixS()
+        let resolvedS = S
         let x1 = romword(S: S)
         fixD()
+        let resolvedD = D
         let x2 = romword(S: D)
+
+        // TEMP cassette debug: trace the cassette ISR's wait-loop compare
+        // (`C *R14, @>13F0(R0)` at >1410).
+        if currentOp == 0x881E && WP == 0x83C0 && TMS9900.cDebugLogCount < 5 {
+            TMS9900.cDebugLogCount += 1
+            print(String(format:
+                "[op_c] op=%04X Td=%d D=%d Ts=%d S=%d resolvedS=%04X resolvedD=%04X x1=%04X x2=%04X eq=%@",
+                currentOp, savedTd, savedD, savedTs, savedS,
+                resolvedS, resolvedD, x1, x2, x1 == x2 ? "YES" : "no"))
+        }
 
         resetST(BIT_LGT | BIT_AGT | BIT_EQ)
         if x1 > x2 { setST(bits: BIT_LGT) }
