@@ -4192,6 +4192,33 @@ void do1()
 
         Word oldWP = pCurrentCPU->GetWP();
         Word oldST = pCurrentCPU->GetST();
+
+        // [trace] cassette state-machine path-trace hooks with register
+        // dumps. rcpubyte is accessible from this scope (used elsewhere
+        // in this file), so we read R0-R7 from the current workspace
+        // every time PC visits a watched address. The Swift99a side has
+        // an equivalent PCREGS event, so we can diff the register state
+        // at the bail-vs-continue branch (PC=0x14DA = `C R5,R4`).
+        // Watch list also includes 0x13C0 / 0x13C2 (where Swift99a's
+        // SRL R5,6 sets R5=0x00E4 — the value that drives the bail).
+        if (pCurrentCPU == pCPU) {
+            Word pc = pCurrentCPU->GetPC();
+            if (pc == 0x15B6) {
+                casTrace("BYTE pc=15B6 wp=%04X", oldWP);
+            }
+            if (pc == 0x13BC || pc == 0x13C0 || pc == 0x13C2 ||
+                pc == 0x14DA || pc == 0x14DE || pc == 0x14E0 ||
+                pc == 0x14E2 || pc == 0x1562) {
+                Word r[8];
+                for (int i = 0; i < 8; i++) {
+                    Word a = oldWP + i*2;
+                    r[i] = (rcpubyte(a, ACCESS_FREE) << 8) | rcpubyte(a+1, ACCESS_FREE);
+                }
+                casTrace("PCVISIT pc=%04X wp=%04X r0=%04X r1=%04X r2=%04X r3=%04X r4=%04X r5=%04X r6=%04X r7=%04X",
+                         pc, oldWP, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
+            }
+        }
+
 		Word in = pCurrentCPU->ExecuteOpcode(nopFrame);
 
         if (pCurrentCPU == pCPU) {

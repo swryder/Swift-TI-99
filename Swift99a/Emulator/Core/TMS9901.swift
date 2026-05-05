@@ -33,6 +33,12 @@ final class TMS9901: Peripheral {
     /// Cassette device that drives CDIN (bit 27). When nil, CDIN reads as 0.
     weak var cassette: Cassette?
 
+    /// Keyboard peripheral. In I/O mode bits 3-10 are keyboard rows; in
+    /// clock mode those same CRU bits expose timer bits 2-9. The 9901
+    /// must own the read claim so the clock-mode decode runs first; we
+    /// delegate to the keyboard here when clock mode is off.
+    weak var keyboard: Peripheral?
+
     /// CPU reference. Used to compute current emulator µs from
     /// `totalCycleCount` so the timer can fire at proper rate even when
     /// the emulator is running in coarse slices.
@@ -196,9 +202,16 @@ final class TMS9901: Peripheral {
     /// of bits 1–14. While the timer is running this ramps from `timerInitial`
     /// down to zero and reloads. Cycle-based to stay in sync with the
     /// fire-detection logic above.
+    ///
+    /// In clock mode the decrementer continues to run on real hardware —
+    /// reads expose the *current* running count, not the load value. The
+    /// cassette ROM's leader-period measurement at >147E loads the timer
+    /// with 0x3FFF, exits clock mode, waits for an edge, re-enters clock
+    /// mode, and STCRs the elapsed count to derive the bit-period timer
+    /// load. Returning timerInitial here would short-circuit that to the
+    /// max value and the resulting timer load would be ~8× too slow.
     private func currentTimerValue() -> UInt16 {
         guard timerInitial > 0 else { return 0 }
-        if clockMode { return timerInitial }
         let nowCycles = cpu?.totalCycleCount ?? timerStartCycle
         let cellCycles = Int(timerInitial) * Self.cyclesPerTick
         let elapsed = nowCycles - timerStartCycle
@@ -225,6 +238,13 @@ final class TMS9901: Peripheral {
         if clockMode, addr >= 1, addr <= 14 {
             let bit = UInt16(addr - 1)
             return UInt8((currentTimerValue() >> bit) & 1)
+        }
+        // I/O mode: bits 3-10 are keyboard rows on the TI-99/4A. We own
+        // the read claim so the clock-mode dispatch above can intercept
+        // those bits during the cassette's leader-period STCR; outside
+        // clock mode we forward to the keyboard.
+        if !clockMode, addr >= 3, addr <= 10, let kb = keyboard {
+            return kb.read(addr: addr, isIO: isIO, cycles: &cycles, accessType: accessType)
         }
 
         switch addr {
@@ -300,14 +320,13 @@ final class TMS9901: Peripheral {
                     timerInitial &= ~mask
                 }
                 timerInitial &= 0x3FFF
-                // [trace] CRUWRITE matching Classic99 — log every set-bit
-                // during the timer LDCR so we can see what start value
-                // each emulator computes from the same ROM writes.
-                if data != 0 {
-                    CassetteTrace.log(currentCycle: cpu?.totalCycleCount ?? 0,
-                                      event: "CRUWRITE",
-                                      details: "op=SBO bit=\(addr) clockmode=1 starttimer=\(timerInitial)")
-                }
+                // [trace] CRUWRITE — log BOTH SBOs and SBZs in clock mode
+                // so we don't miss bit-clears (the cassette ROM does SBZ
+                // to clear high bits when computing the leader-period
+                // timer load).
+                CassetteTrace.log(currentCycle: cpu?.totalCycleCount ?? 0,
+                                  event: "CRUWRITE",
+                                  details: "op=\(data != 0 ? "SBO" : "SBZ") bit=\(addr) clockmode=1 starttimer=\(timerInitial)")
             } else {
                 // I/O mode: set/clear interrupt mask bit.
                 let prev = intMask

@@ -18,9 +18,16 @@
 // total_cycles is the cycle counter declared in Classic99's Tiemul.cpp.
 // Type/qualifiers must match the declaration there exactly:
 //     volatile unsigned long total_cycles=0;
-// (originally I had `extern "C" unsigned int` which is wrong on both
-// counts — caught and fixed.)
 extern volatile unsigned long total_cycles;
+
+// `casReadWord` was an attempt to expose ROMWORD-based memory access
+// to Tiemul.cpp via a thin wrapper. Including cpu9900.h here pulled in
+// macros that break Tiemul.cpp's compilation — reverted. We just log
+// PC visits without register values; the *path* the ROM takes is the
+// signal we need (i.e. does Classic99 ever take 0x1562's bail path?).
+unsigned short casReadWord(unsigned short /*addr*/) {
+    return 0;  // unused stub; see Tiemul.cpp PCREGS hook for why
+}
 
 static FILE*          gCasTrace      = NULL;
 static unsigned long  gCasTraceStart = 0;

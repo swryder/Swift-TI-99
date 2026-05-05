@@ -173,6 +173,14 @@ final class Cassette: AudioSource {
     /// lazily inside `currentSampleIndex()` so each CDIN read reflects the
     /// tape position at the *current* CPU instruction.
     func operate(timestamp: Double) {
+        // The tape advances whenever both:
+        //   - the user has the transport in PLAY, AND
+        //   - the cassette ROM has CS1 motor on (CRU bit 22)
+        // This matches real hardware: pressing PLAY engages the motor
+        // immediately and the tape moves as long as the ROM holds the
+        // motor signal high. If the user presses PLAY too late and the
+        // leader has already passed by the time OLD CS1 starts reading,
+        // that's a user-timing problem (same on real hardware).
         let motorRunning = !pcm.isEmpty
             && transportState == .play
             && (tms9901?.cs1MotorOn ?? false)
@@ -184,8 +192,11 @@ final class Cassette: AudioSource {
             }
             // [trace] this is the off→on transition that ungates the
             // decoder. Reset the trace clock and log a MOTOR event matching
-            // Classic99's setTapeMotor format.
+            // Classic99's setTapeMotor format. Also enable the noisier
+            // event gates (REGS, PC, MEMW) which only run while the
+            // cassette is actually playing.
             CassetteTrace.resetClock(currentCycle: motorOnCycles!)
+            CassetteTrace.motorActive = true
             CassetteTrace.log(currentCycle: motorOnCycles!, event: "MOTOR",
                               details: "req=1 prevOn=0 state=1 pos=\(sampleAtMotorOn) size=\(pcm.count)")
         } else if !motorRunning, let onCycles = motorOnCycles {
@@ -194,6 +205,9 @@ final class Cassette: AudioSource {
             let advance = Int(elapsedMicros * Self.sampleRate / 1_000_000)
             sampleAtMotorOn = min(sampleAtMotorOn + advance, pcm.count)
             motorOnCycles = nil
+            // [trace] disable the noisier event gates so the post-cassette
+            // BASIC keyboard scan doesn't flood the trace.
+            CassetteTrace.motorActive = false
             if Self.debugLog {
                 print("[Cassette] MOTOR OFF +\(elapsedCycles) cyc " +
                       "(\(String(format: "%.1f", elapsedMicros)) µs), sample=\(sampleAtMotorOn)")
@@ -231,6 +245,12 @@ final class Cassette: AudioSource {
     /// When no tape is loaded or the transport is stopped, the line floats
     /// idle (no peak ever) — return 1, the documented inactive level.
     func readDataIn() -> UInt8 {
+        // Active-low (matches Classic99 v1's tape.cpp): peak detected
+        // on the wire returns 0 to the CRU; silent returns 1.
+        // (Confirmed by experiment that flipping this to non-inverted
+        // does NOT change the symptom — R1.low's auto-XOR makes the
+        // polarity tracker invariant to absolute inversion. The bug is
+        // somewhere else in the bit-decode path.)
         guard !pcm.isEmpty, transportState == .play else { return 1 }
         let pos = currentSampleIndex()
         guard pos < pcm.count else { return 1 }

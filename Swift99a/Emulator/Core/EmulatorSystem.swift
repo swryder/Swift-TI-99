@@ -268,6 +268,15 @@ class EmulatorSystem {
         return memorySpaceRead[addr].who.peek(addr: memorySpaceRead[addr].addr)
     }
 
+    /// Diagnostic-only: read from the peripheral directly, bypassing the
+    /// shadow fast-path. Use this to detect stale-shadow bugs by comparing
+    /// against `peekMemoryByte` at the same address.
+    func peekMemoryByteFromPeripheral(address: Int) -> UInt8 {
+        var addr = address
+        if addr >= memorySize { addr &= (memorySize - 1) }
+        return memorySpaceRead[addr].who.peek(addr: memorySpaceRead[addr].addr)
+    }
+
     func writeMemoryByte(address: Int, cycles: inout Int, accessType: MemoryAccess, data: UInt8) {
         var addr = address
         if addr >= memorySize { addr &= (memorySize - 1) }
@@ -277,11 +286,24 @@ class EmulatorSystem {
         cycles += memorySpaceRead[addr].waitStates
         memorySpaceWrite[addr].who.write(
             addr: memorySpaceWrite[addr].addr, isIO: false, cycles: &cycles, accessType: accessType, data: data)
+        // [trace] catch ANY write to R5 (cassette workspace at 0x83EA-83EB)
+        // even if it bypasses wcpubyte/wrword. We were missing some writes
+        // — REGS read 0x00E4 at moments when MEMW_R5 logs said 0x0000.
+        let isR5Addr = (addr == 0x83EA || addr == 0x83EB)
         // Only mirror into shadow when the peripheral is actually memory-backed
         // (i.e. RAM). Mirroring writes to ROM/sound/VDP would taint the read
         // fast path with values that don't reflect what hardware returns.
-        if memorySpaceWriteShadow.unsafelyUnwrapped[addr] != 0 {
+        let shadowFlag = memorySpaceWriteShadow.unsafelyUnwrapped[addr]
+        if shadowFlag != 0 {
             shadowMemory.unsafelyUnwrapped[addr] = data
+        }
+        if isR5Addr {
+            let periphRead = memorySpaceRead[addr].who.peek(addr: memorySpaceRead[addr].addr)
+            let shadowVal = shadowMemory.unsafelyUnwrapped[addr]
+            CassetteTrace.log(currentCycle: 0, event: "MEMW_R5_RAW",
+                              details: String(format: "addr=%04X val=%02X type=%@ wsflag=%d shadow=%02X periph=%02X",
+                                              addr, data, "\(accessType)",
+                                              shadowFlag, shadowVal, periphRead))
         }
     }
 

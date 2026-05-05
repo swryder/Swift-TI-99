@@ -20,6 +20,7 @@ extern "C" {
 void casTraceOpen(void);
 void casTraceResetClock(void);
 void casTrace(const char* fmt, ...);
+unsigned short casReadWord(unsigned short addr);
 
 #ifdef __cplusplus
 }

@@ -174,30 +174,28 @@ class TI994A: EmulatorSystem {
         pTMS9901!.vdp = pVDP
 
         // Map TMS9901 CRU bits, mirrored every 32 bits through 0x000-0x7FF.
-        // - Reads at bits 0-2 (clock mode / peripheral INT / VDP INT) go to
-        //   the chip. Reads at bits 3-10 are keyboard rows and are claimed
-        //   below; we leave them to the keyboard.
+        // - Reads at bits 0-15 go to the chip. The 9901 internally delegates
+        //   bits 3-10 to the keyboard when NOT in clock mode (those CRU
+        //   pins are multiplexed: keyboard rows in I/O mode, timer bits in
+        //   clock mode). Without this, the cassette ROM's STCR R3,15 to
+        //   read the leader-period timer countdown would hit the keyboard
+        //   for bits 3-10 (returning "no key pressed"=1) and produce a
+        //   bogus 0x07FF instead of the actual running count, scaling the
+        //   bit-detect timer ~8× too slow.
         // - Writes at bits 0-15 ALL go to the chip — they manipulate the
         //   interrupt mask in I/O mode (bits 1-15) or the timer value in
-        //   clock mode. Without this, the cassette ROM's SBO 3 (timer ack)
-        //   and the LDCR that loads the timer value were silently dropped:
-        //   the ROM's clock-mode write of `>0011` to load the timer would
-        //   only land bits 0-2 (giving an apparent timerInitial=1 instead
-        //   of 17), and the ack of CRU bit 3 would never reach our latch.
+        //   clock mode.
         for idx in stride(from: 0, to: 0x800, by: 32) {
-            for off in 0...2 {
-                _ = claimIORead(sysAddr: idx + off, peripheral: pTMS9901!, periphAddr: off)
-            }
             for off in 0...15 {
+                _ = claimIORead(sysAddr: idx + off, peripheral: pTMS9901!, periphAddr: off)
                 _ = claimIOWrite(sysAddr: idx + off, peripheral: pTMS9901!, periphAddr: off)
             }
         }
 
-        // Keyboard CRU I/O
+        // Keyboard CRU I/O. Bits 3-10 reads are owned by the 9901 above
+        // and forwarded here when clockMode is off.
+        pTMS9901!.keyboard = pKey
         for idx in stride(from: 0, to: 0x800, by: 20) {
-            for off in 3...10 {
-                _ = claimIORead(sysAddr: idx + off, peripheral: pKey!, periphAddr: off)
-            }
             for off in 18...20 {
                 _ = claimIOWrite(sysAddr: idx + off, peripheral: pKey!, periphAddr: off)
             }
