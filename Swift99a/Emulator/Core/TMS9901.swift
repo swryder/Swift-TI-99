@@ -67,16 +67,20 @@ final class TMS9901: Peripheral {
     // interrupt — without it, the routine never recovers timing for the
     // FSK signal and trap-loops at >1574.
     //
-    // Counting rate is φ/64 = 3 MHz / 64 = 46 875 ticks/sec ≈ 21.33 µs/tick.
-    private static let timerTickMicros: Double = 64.0 / 3.0
+    // Counting rate is φ/64. On a 3MHz TMS9900 each timer tick is 64 CPU
+    // cycles. We measure elapsed time directly in CPU cycles (read from
+    // `cpu.totalCycleCount`) so there's no drift between the timer's
+    // reference point and the CPU's "now" — that drift was producing
+    // bimodal fire periods (1344 cyc / 6000 cyc) instead of the steady
+    // ~2170 cyc Classic99 produces under the same conditions.
+    private static let cyclesPerTick: Int = 64
 
     /// 14-bit value loaded by the CPU. Zero disables the timer.
     private var timerInitial: UInt16 = 0
 
-    /// Emulator timestamp (µs) at which the running timer last started or
-    /// reloaded. Combined with `timerInitial`, this gives the absolute time
-    /// of every subsequent expiry.
-    private var timerStartTime: Double = 0
+    /// CPU cycle count at which the timer last started or reloaded.
+    /// Set when SBZ 0 exits clock mode; advanced by `cellCycles` per fire.
+    private var timerStartCycle: Int = 0
 
     /// Number of expiries that have already triggered an interrupt request.
     /// Cleared whenever the timer is (re)started so a freshly-loaded timer
@@ -100,24 +104,11 @@ final class TMS9901: Peripheral {
     private var debugTimerAckCount: Int = 0
 
     override func operate(timestamp: Double) -> Bool {
-        // Detect new timer expiries and latch timerIntReq. The ROM acks each
-        // one via SBO/SBZ 3, which clears the latch so the next expiry can
-        // fire. The TI-99/4A's TMS9901 wires the timer onto CPU INT2 — the
-        // same vector as VDP — so the cassette ISR sees timer ticks at the
-        // bit-cell rate (~363 µs) interleaved with VDP frame ticks.
-        if !clockMode, timerInitial > 0, !timerIntReq {
-            let cellMicros = Double(timerInitial) * Self.timerTickMicros
-            let elapsed = timestamp - timerStartTime
-            if elapsed >= cellMicros {
-                timerIntReq = true
-                timerStartTime += cellMicros * floor(elapsed / cellMicros)
-                debugTimerFireCount += 1
-                if debugTimerFireCount <= 20 || debugTimerFireCount % 1000 == 0 {
-                    print("[TMS9901] timer FIRE #\(debugTimerFireCount) " +
-                          "(timerInitial=\(timerInitial))")
-                }
-            }
-        }
+        // The actual fire logic (with trace logging) lives in
+        // `updateLevel1Request()` so we don't have two slightly-different
+        // copies of it. This used to mirror that function's logic but
+        // without the trace hook, which silently dropped every fire from
+        // the trace.
         updateLevel1Request()
         return true
     }
@@ -148,18 +139,22 @@ final class TMS9901: Peripheral {
     private func updateLevel1Request() {
         // Re-evaluate the timer using the CPU's current cycle count so a
         // small `timerInitial` value can produce many fires within one
-        // emulator slice. Real hardware re-asserts the latch immediately
-        // when the timer expires; this matches that behaviour as long as
-        // `refreshInterruptRequest()` is called at every CPU instruction
-        // boundary.
+        // emulator slice. Cycle-based math (vs the µs-via-currentTimestamp
+        // approach this used to use) keeps the timer reference point in
+        // lockstep with `cpu.totalCycleCount`, which is what every fire
+        // check reads — no drift between "when SBZ 0 was processed" and
+        // "what time the CPU thinks it is now."
         if !clockMode, timerInitial > 0, !timerIntReq, let cpu = cpu {
-            let nowMicros = Double(cpu.totalCycleCount) / 3.0
-            let cellMicros = Double(timerInitial) * Self.timerTickMicros
-            let elapsed = nowMicros - timerStartTime
-            if elapsed >= cellMicros {
+            let cellCycles = Int(timerInitial) * Self.cyclesPerTick
+            let elapsed = cpu.totalCycleCount - timerStartCycle
+            if elapsed >= cellCycles {
                 timerIntReq = true
-                timerStartTime += cellMicros * floor(elapsed / cellMicros)
+                timerStartCycle += cellCycles * (elapsed / cellCycles)
                 debugTimerFireCount += 1
+                // [trace] mirror Classic99 TIMERFIRE start=N
+                CassetteTrace.log(currentCycle: cpu.totalCycleCount,
+                                  event: "TIMERFIRE",
+                                  details: "start=\(timerInitial)")
                 if debugTimerFireCount <= 5 || debugTimerFireCount % 100_000 == 0 {
                     print("[TMS9901] timer FIRE #\(debugTimerFireCount) " +
                           "(timerInitial=\(timerInitial))")
@@ -199,15 +194,16 @@ final class TMS9901: Peripheral {
 
     /// Reads the current 14-bit timer value, used by clock-mode CRU reads
     /// of bits 1–14. While the timer is running this ramps from `timerInitial`
-    /// down to zero and reloads.
+    /// down to zero and reloads. Cycle-based to stay in sync with the
+    /// fire-detection logic above.
     private func currentTimerValue() -> UInt16 {
         guard timerInitial > 0 else { return 0 }
         if clockMode { return timerInitial }
-        let now = theCore?.currentTimestamp ?? timerStartTime
-        let elapsed = now - timerStartTime
-        let cellMicros = Double(timerInitial) * Self.timerTickMicros
-        let withinCell = elapsed.truncatingRemainder(dividingBy: cellMicros)
-        let ticksInto = Int(withinCell / Self.timerTickMicros)
+        let nowCycles = cpu?.totalCycleCount ?? timerStartCycle
+        let cellCycles = Int(timerInitial) * Self.cyclesPerTick
+        let elapsed = nowCycles - timerStartCycle
+        let withinCell = elapsed % cellCycles
+        let ticksInto = withinCell / Self.cyclesPerTick
         let remaining = Int(timerInitial) - ticksInto
         return UInt16(max(0, min(0x3FFF, remaining)))
     }
@@ -282,8 +278,12 @@ final class TMS9901: Peripheral {
             let entering = (data != 0)
             if entering != clockMode {
                 if !entering {
-                    // I/O mode: (re)start the timer from `timerInitial`.
-                    timerStartTime = theCore?.currentTimestamp ?? 0
+                    // I/O mode: (re)start the timer from `timerInitial`,
+                    // anchored to the current CPU cycle (NOT the slice
+                    // boundary's `currentTimestamp`, which can be ~1 ms
+                    // ahead of the CPU at this instant and produced bimodal
+                    // fire periods).
+                    timerStartCycle = cpu?.totalCycleCount ?? 0
                     timerFiresDelivered = 0
                 }
                 clockMode = entering
@@ -300,6 +300,14 @@ final class TMS9901: Peripheral {
                     timerInitial &= ~mask
                 }
                 timerInitial &= 0x3FFF
+                // [trace] CRUWRITE matching Classic99 — log every set-bit
+                // during the timer LDCR so we can see what start value
+                // each emulator computes from the same ROM writes.
+                if data != 0 {
+                    CassetteTrace.log(currentCycle: cpu?.totalCycleCount ?? 0,
+                                      event: "CRUWRITE",
+                                      details: "op=SBO bit=\(addr) clockmode=1 starttimer=\(timerInitial)")
+                }
             } else {
                 // I/O mode: set/clear interrupt mask bit.
                 let prev = intMask
@@ -323,6 +331,11 @@ final class TMS9901: Peripheral {
                 if addr == 3 {
                     let wasReq = timerIntReq
                     timerIntReq = false
+                    // [trace] TIMERACK — matches Classic99 op=SBO/SBZ had=N
+                    let op = data != 0 ? "SBO" : "SBZ"
+                    CassetteTrace.log(currentCycle: cpu?.totalCycleCount ?? 0,
+                                      event: "TIMERACK",
+                                      details: "op=\(op) had=\(wasReq ? 1 : 0)")
                     if wasReq {
                         debugTimerAckCount += 1
                         if debugTimerAckCount <= 5 || debugTimerAckCount % 100_000 == 0 {

@@ -146,6 +146,13 @@ final class Cassette: AudioSource {
                   "samples=\(pcm.count) (\(String(format: "%.1f", image.durationSeconds)) s), " +
                   "first=\(firstSamples)")
         }
+        // [trace] mirror Classic99 LOAD event with the first 16 samples so
+        // the diff has equivalent inputs at the start of each trace.
+        let cyc = cpu?.totalCycleCount ?? 0
+        CassetteTrace.openIfNeeded(currentCycle: cyc)
+        let first16 = pcm.prefix(16).map { String(format: "%02X", $0) }.joined(separator: " ")
+        CassetteTrace.log(currentCycle: cyc, event: "LOAD",
+                          details: "size=\(pcm.count) first=\(first16)")
     }
 
     func eject() {
@@ -175,6 +182,12 @@ final class Cassette: AudioSource {
             if Self.debugLog {
                 print("[Cassette] MOTOR ON  @cycle \(motorOnCycles!), startSample=\(sampleAtMotorOn)")
             }
+            // [trace] this is the off→on transition that ungates the
+            // decoder. Reset the trace clock and log a MOTOR event matching
+            // Classic99's setTapeMotor format.
+            CassetteTrace.resetClock(currentCycle: motorOnCycles!)
+            CassetteTrace.log(currentCycle: motorOnCycles!, event: "MOTOR",
+                              details: "req=1 prevOn=0 state=1 pos=\(sampleAtMotorOn) size=\(pcm.count)")
         } else if !motorRunning, let onCycles = motorOnCycles {
             let elapsedCycles = (cpu?.totalCycleCount ?? onCycles) - onCycles
             let elapsedMicros = Double(elapsedCycles) / Self.cpuMHz
@@ -223,6 +236,20 @@ final class Cassette: AudioSource {
         guard pos < pcm.count else { return 1 }
         let peak = pcm[pos] >= Self.cdinThreshold
         let val: UInt8 = peak ? 0 : 1
+        // [trace] log every CDIN read in the same format as Classic99's
+        // tape.cpp::getTapeBit() hook. Note: bit values are inverted
+        // relative to Classic99 because Classic99 logs `getTapeBit()`'s
+        // raw return BEFORE the active-low inversion happens at CRU read
+        // time. Here we log the post-inversion value (what the ROM sees),
+        // which matches Classic99's `bit=` (which is also post-getTapeBit
+        // semantically — both represent "is there a peak").
+        // To make the bit values directly comparable to Classic99, we log
+        // peak (1=peak, 0=silent), matching `bit=` in the C99 trace.
+        let bitVal: Int = peak ? 1 : 0
+        let sampleVal = Int(pcm[pos])
+        let cyc = cpu?.totalCycleCount ?? 0
+        CassetteTrace.log(currentCycle: cyc, event: "CDIN",
+                          details: "pos=\(pos) sample=\(sampleVal) bit=\(bitVal) motor=\(transportState == .play ? 1 : 0)")
         if Self.debugLog {
             cdinReadCount += 1
             if cdinReadCount <= 5 || cdinReadCount % 250_000 == 0 {

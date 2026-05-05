@@ -291,6 +291,18 @@ final class TMS9900: Peripheral {
     func triggerInterrupt(level: Int) {
         let vector = UInt16(level * 4)
 
+        // [trace] INT1ENTRY — capture interrupted PC/WP/ST so the diff
+        // can show exactly where each emulator was when level-1 fired.
+        // We don't yet know the interrupt source from this layer; pass "?"
+        // for now (Classic99 logs V/T/VT — could be added by hooking the
+        // caller side with knowledge of which line is asserted).
+        if level == 1 {
+            CassetteTrace.log(currentCycle: totalCycleCount,
+                              event: "INT1ENTRY",
+                              details: String(format: "pc=%04X wp=%04X st=%04X src=?",
+                                              PC, WP, ST))
+        }
+
         idling = false
 
         let newWP = romword(S: vector)
@@ -298,6 +310,13 @@ final class TMS9900: Peripheral {
         wrword(D: newWP &+ 28, V: PC)
         wrword(D: newWP &+ 30, V: ST)
 
+        // Per TMS9900 datasheet: new ST.LIMI = level - 1 (so a level-N
+        // interrupt masks levels N and higher). For level-1, LIMI=0.
+        // (Tried LIMI=1 to match Classic99 v1's quirk where it passes
+        //  `level=2` to TriggerInterrupt — turned out to be a no-op for
+        //  the cassette decode because the ISR's first instruction at
+        //  >0900 is `LIMI 0`, which immediately overrides whatever
+        //  triggerInterrupt set.)
         if level <= 0 {
             setST(ST & 0xFFF0)
         } else {
