@@ -116,10 +116,18 @@ final class Cassette: AudioSource {
     func play() {
         transportState = .play
         if Self.debugLog { print("[Cassette] TRANSPORT: PLAY") }
+        // Re-evaluate motor state right now so motorOnCycles is captured
+        // at the exact CPU cycle the user pressed PLAY (if cs1MotorOn
+        // was already asserted by the cassette ROM). Otherwise we'd
+        // wait until the next operate() tick to notice — that ~1ms gap
+        // shifts every CDIN read downstream and was a source of
+        // run-to-run intermittence.
+        evaluateMotorState(atCycle: cpu?.totalCycleCount ?? 0)
     }
     func stop() {
         transportState = .stopped
         if Self.debugLog { print("[Cassette] TRANSPORT: STOP") }
+        evaluateMotorState(atCycle: cpu?.totalCycleCount ?? 0)
     }
     func rewind() {
         sampleAtMotorOn = 0
@@ -173,46 +181,18 @@ final class Cassette: AudioSource {
     /// lazily inside `currentSampleIndex()` so each CDIN read reflects the
     /// tape position at the *current* CPU instruction.
     func operate(timestamp: Double) {
-        // The tape advances whenever both:
-        //   - the user has the transport in PLAY, AND
-        //   - the cassette ROM has CS1 motor on (CRU bit 22)
-        // This matches real hardware: pressing PLAY engages the motor
-        // immediately and the tape moves as long as the ROM holds the
-        // motor signal high. If the user presses PLAY too late and the
-        // leader has already passed by the time OLD CS1 starts reading,
-        // that's a user-timing problem (same on real hardware).
-        let motorRunning = !pcm.isEmpty
-            && transportState == .play
-            && (tms9901?.cs1MotorOn ?? false)
-
-        if motorRunning, motorOnCycles == nil {
-            motorOnCycles = cpu?.totalCycleCount ?? 0
-            if Self.debugLog {
-                print("[Cassette] MOTOR ON  @cycle \(motorOnCycles!), startSample=\(sampleAtMotorOn)")
-            }
-            // [trace] this is the off→on transition that ungates the
-            // decoder. Reset the trace clock and log a MOTOR event matching
-            // Classic99's setTapeMotor format. Also enable the noisier
-            // event gates (REGS, PC, MEMW) which only run while the
-            // cassette is actually playing.
-            CassetteTrace.resetClock(currentCycle: motorOnCycles!)
-            CassetteTrace.motorActive = true
-            CassetteTrace.log(currentCycle: motorOnCycles!, event: "MOTOR",
-                              details: "req=1 prevOn=0 state=1 pos=\(sampleAtMotorOn) size=\(pcm.count)")
-        } else if !motorRunning, let onCycles = motorOnCycles {
-            let elapsedCycles = (cpu?.totalCycleCount ?? onCycles) - onCycles
-            let elapsedMicros = Double(elapsedCycles) / Self.cpuMHz
-            let advance = Int(elapsedMicros * Self.sampleRate / 1_000_000)
-            sampleAtMotorOn = min(sampleAtMotorOn + advance, pcm.count)
-            motorOnCycles = nil
-            // [trace] disable the noisier event gates so the post-cassette
-            // BASIC keyboard scan doesn't flood the trace.
-            CassetteTrace.motorActive = false
-            if Self.debugLog {
-                print("[Cassette] MOTOR OFF +\(elapsedCycles) cyc " +
-                      "(\(String(format: "%.1f", elapsedMicros)) µs), sample=\(sampleAtMotorOn)")
-            }
-        }
+        // The actual motor-state-change detection now happens
+        // synchronously inside `evaluateMotorState(atCycle:)`, which is
+        // invoked from TMS9901 the instant CRU bit 22 / 23 / the
+        // transport state changes — and also from here once per tick
+        // to handle transitions driven by the *user* pressing PLAY/STOP
+        // (the keyboard event setting `transportState` doesn't go
+        // through a CRU write). Doing the cycle capture from the CRU
+        // write handler instead of polling here eliminates the
+        // ~per-tick jitter that used to make the cassette decoder
+        // intermittently misread bytes (run-to-run divergence at the
+        // ~5-cycle level).
+        evaluateMotorState(atCycle: cpu?.totalCycleCount ?? 0)
 
         // Once-per-second PC dump while motor is on (kept for diagnostics).
         if Self.debugLog, motorOnCycles != nil, let cpu = cpu, let core = tms9901?.theCore,
@@ -228,6 +208,40 @@ final class Cassette: AudioSource {
             print(String(format:
                 "[Cassette] tick PC=>%04X WP=>%04X R0=%04X R1=%04X R2=%04X R3=%04X R7=%04X R8=%04X R10=>%04X | sample=%d/%d",
                 cpu.PC, cpu.WP, reg(0), reg(1), reg(2), reg(3), reg(7), reg(8), reg(10), pos, pcm.count))
+        }
+    }
+
+    /// Called whenever something that affects motor-running state has
+    /// changed: TMS9901 toggling cs1MotorOn (via SBO/SBZ 22), or the
+    /// user pressing PLAY/STOP on the transport. Captures the
+    /// transition cycle EXACTLY when the change happens, not at the
+    /// next tick boundary. `atCycle` is the CPU cycle count at the
+    /// moment of the change.
+    func evaluateMotorState(atCycle cycle: Int) {
+        let motorRunning = !pcm.isEmpty
+            && transportState == .play
+            && (tms9901?.cs1MotorOn ?? false)
+
+        if motorRunning, motorOnCycles == nil {
+            motorOnCycles = cycle
+            if Self.debugLog {
+                print("[Cassette] MOTOR ON  @cycle \(cycle), startSample=\(sampleAtMotorOn)")
+            }
+            CassetteTrace.resetClock(currentCycle: cycle)
+            CassetteTrace.motorActive = true
+            CassetteTrace.log(currentCycle: cycle, event: "MOTOR",
+                              details: "req=1 prevOn=0 state=1 pos=\(sampleAtMotorOn) size=\(pcm.count)")
+        } else if !motorRunning, let onCycles = motorOnCycles {
+            let elapsedCycles = cycle - onCycles
+            let elapsedMicros = Double(elapsedCycles) / Self.cpuMHz
+            let advance = Int(elapsedMicros * Self.sampleRate / 1_000_000)
+            sampleAtMotorOn = min(sampleAtMotorOn + advance, pcm.count)
+            motorOnCycles = nil
+            CassetteTrace.motorActive = false
+            if Self.debugLog {
+                print("[Cassette] MOTOR OFF +\(elapsedCycles) cyc " +
+                      "(\(String(format: "%.1f", elapsedMicros)) µs), sample=\(sampleAtMotorOn)")
+            }
         }
     }
 

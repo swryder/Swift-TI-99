@@ -388,12 +388,20 @@ final class TMS9901: Peripheral {
         case 22:
             let new = (data != 0)
             if new != cs1MotorOn {
+                let nowCycle = cpu?.totalCycleCount ?? 0
                 print("[TMS9901] cs1MotorOn := \(new)")
-                CassetteTrace.log(currentCycle: cpu?.totalCycleCount ?? 0,
+                CassetteTrace.log(currentCycle: nowCycle,
                                   event: "MOTORBIT",
                                   details: "bit=22 cs1=\(new ? 1 : 0)")
+                cs1MotorOn = new
+                // Synchronously re-evaluate motor state so the cassette
+                // captures the exact cycle of the SBO/SBZ instead of
+                // waiting for the next operate() tick. Eliminates the
+                // ~1ms-of-cycles jitter that caused run-to-run drift.
+                cassette?.evaluateMotorState(atCycle: nowCycle)
             }
-            cs1MotorOn = new
+            // (assignment moved inside the change-detect branch above so
+            // we don't re-fire callbacks when the value didn't change)
 
         case 23:
             let new = (data != 0)

@@ -178,23 +178,28 @@ final class Emulator: ObservableObject {
         simTimeBase = system.currentTimestamp
 
         if mode == .realTime {
-            // Timer fires at ~1000Hz. Each fire runs enough simulated time
-            // to catch up with wall-clock elapsed time (capped to avoid
-            // spiral-of-death if we fall behind).
+            // Timer fires at ~1000 Hz wall-clock. Each fire advances
+            // simulated time by EXACTLY 1 ms — no wall-clock catch-up.
+            // The previous wall-clock-anchored catch-up loop ran a
+            // variable number of 1 ms slices per fire (depending on
+            // dispatch jitter), which made the cycle count after N
+            // ticks non-deterministic between runs. That tiny variance
+            // accumulated and caused the cassette decoder's intermittent
+            // ERROR DETECTED IN DATA — same WAV input, two runs would
+            // diverge by ~5 cycles at byte 4436 and the ROM would flip a
+            // conditional at byte 4437.
+            //
+            // Trade-off: if the host gets sustained-busy and dispatch
+            // falls behind, the emulator runs slower than real-time
+            // rather than catching up. Audio may skip instead of
+            // double-running. For cassette decoding correctness, that's
+            // strictly better — the cassette ROM is a state machine
+            // that depends on cycle-deterministic behavior.
             let newTimer = DispatchSource.makeTimerSource(queue: emulatorQueue)
             newTimer.schedule(deadline: .now(), repeating: .microseconds(1000))
             newTimer.setEventHandler { [weak self] in
                 guard let self = self, self.running else { return }
-                let wallNow = CFAbsoluteTimeGetCurrent()
-                let wallElapsed = wallNow - self.wallClockBase
-                let targetSimTime = self.simTimeBase + wallElapsed * 1_000_000.0
-
-                // Run in 1ms slices until caught up (cap at 50ms to prevent runaway)
-                let maxSimTime = self.system.currentTimestamp + 50_000.0
-                let target = min(targetSimTime, maxSimTime)
-                while self.system.currentTimestamp < target {
-                    _ = self.system.runSystem(microSeconds: 1000)
-                }
+                _ = self.system.runSystem(microSeconds: 1000)
                 self.updateStats()
             }
             newTimer.resume()
