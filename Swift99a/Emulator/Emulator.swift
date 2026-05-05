@@ -200,6 +200,25 @@ final class Emulator: ObservableObject {
             newTimer.setEventHandler { [weak self] in
                 guard let self = self, self.running else { return }
                 _ = self.system.runSystem(microSeconds: 1000)
+                // If the cassette has run off the end of its PCM and the
+                // ROM is still in some post-decode wait loop (verifying
+                // records, returning to BASIC, etc.), run additional
+                // slices in this same tick to accelerate to host CPU
+                // speed. Classic99 effectively does this because it
+                // doesn't pace CPU to real-time during the post-audio
+                // cleanup; users see "DATA OK" within 1 second of audio
+                // ending instead of having to wait ~1 minute of paced
+                // 3 MHz emulation. Audio output is silent during this
+                // window (no PCM samples left), so no audio glitching.
+                if self.system.pCassette?.isPostAudioWait == true {
+                    for _ in 0..<99 {
+                        _ = self.system.runSystem(microSeconds: 1000)
+                        // Bail out as soon as the ROM concludes (motor
+                        // off) so we don't keep burst-running into
+                        // BASIC's idle loop.
+                        if self.system.pCassette?.isPostAudioWait != true { break }
+                    }
+                }
                 self.updateStats()
             }
             newTimer.resume()

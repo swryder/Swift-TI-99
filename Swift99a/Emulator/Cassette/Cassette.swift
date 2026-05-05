@@ -105,6 +105,27 @@ final class Cassette: AudioSource {
         return min(1, max(0, audioSampleCursor / Double(pcm.count)))
     }
 
+    /// True when the cassette is mid-load but the audio has run past
+    /// the end of the PCM buffer. The cassette ROM is still spinning
+    /// in some post-decode wait loop (verifying records, waiting for
+    /// silence, returning to BASIC) and CDIN reads will return silent
+    /// indefinitely. The emulator can safely run uncapped here:
+    /// there's nothing real-time to sync to (no audio left to play),
+    /// and Classic99-style ~1-second completion requires the CPU to
+    /// run at host speed instead of paced to 3 MHz emulated. Without
+    /// this, post-audio cleanup takes 1+ minute of wall-clock time.
+    var isPostAudioWait: Bool {
+        guard !pcm.isEmpty,
+              transportState == .play,
+              tms9901?.cs1MotorOn ?? false,
+              let onCycles = motorOnCycles,
+              let cpu = cpu else { return false }
+        let elapsedCycles = cpu.totalCycleCount - onCycles
+        let elapsedMicros = Double(elapsedCycles) / Self.cpuMHz
+        let predicted = sampleAtMotorOn + Int(elapsedMicros * Self.sampleRate / 1_000_000)
+        return predicted >= pcm.count
+    }
+
     /// CDIN read counter — debug only, used to throttle log output.
     private var cdinReadCount: Int = 0
 
