@@ -44,7 +44,14 @@ enum CassetteTrace {
             let docs = FileManager.default.urls(for: .documentDirectory,
                                                  in: .userDomainMask).first
                 ?? URL(fileURLWithPath: NSTemporaryDirectory())
-            let url = docs.appendingPathComponent("swift99a_trace.txt")
+            // Timestamp the filename so every load run produces its own
+            // trace file. Useful for diff'ing successful vs failed runs
+            // when the bug is intermittent — earlier we had to manually
+            // copy the file between runs to avoid overwrites.
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd_HHmmss"
+            let stamp = formatter.string(from: Date())
+            let url = docs.appendingPathComponent("swift99a_trace_\(stamp).txt")
             FileManager.default.createFile(atPath: url.path, contents: nil)
             guard let h = try? FileHandle(forWritingTo: url) else {
                 print("[CassetteTrace] FAILED to open trace file at \(url.path)")
