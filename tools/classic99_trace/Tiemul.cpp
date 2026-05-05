@@ -4204,7 +4204,15 @@ void do1()
         if (pCurrentCPU == pCPU) {
             Word pc = pCurrentCPU->GetPC();
             if (pc == 0x15B6) {
-                casTrace("BYTE pc=15B6 wp=%04X", oldWP);
+                // R4 holds the assembled byte at this point (the
+                // bit-decode loop at >15A0 has just finished its 8th
+                // iteration). Capture so we can diff Classic99's byte
+                // stream against Swift99a's BYTE r4= log.
+                Word a = oldWP + 4 * 2;
+                Word r4 = (rcpubyte(a, ACCESS_FREE) << 8) | rcpubyte(a + 1, ACCESS_FREE);
+                Word a7 = oldWP + 7 * 2;
+                Word r7 = (rcpubyte(a7, ACCESS_FREE) << 8) | rcpubyte(a7 + 1, ACCESS_FREE);
+                casTrace("BYTE pc=15B6 wp=%04X r4=%04X r7=%04X", oldWP, r4, r7);
             }
             if (pc == 0x13BC || pc == 0x13C0 || pc == 0x13C2 ||
                 pc == 0x14DA || pc == 0x14DE || pc == 0x14E0 ||

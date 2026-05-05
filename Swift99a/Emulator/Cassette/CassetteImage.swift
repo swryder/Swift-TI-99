@@ -159,42 +159,41 @@ final class CassetteImage {
             }
         }
 
-        // Render bits to PCM. Match the shape Classic99 produces from real
-        // WAV recordings after its half-wave-rectify + auto-level pipeline:
-        // mostly silent (0x00) with a brief positive peak at every flux
-        // transition. Together with Cassette.swift's threshold 0x12 and
-        // active-low inversion, the ROM sees one CDIN peak per cell on
-        // "0" leader (1 transition per cell to its bit detector) and two
-        // peaks per cell on "1" bits.
+        // Render bits to PCM as half-wave-rectified continuous-phase FSK.
+        // Classic99's BYTE r4= log shows that Swift99a's WAV path decodes
+        // the SAME byte sequence Classic99 does (matched first 30 bytes
+        // exactly), so the cassette ROM does decode our FSK signal
+        // correctly — at least for the first stretch. The .TITape bug
+        // is therefore not a fundamentally-wrong encoding scheme; it's
+        // some narrower pipeline issue that needs to be diff'd against
+        // the WAV path.
+        //
+        //   "0" bit: 689 Hz tone for one cell (1 cycle).
+        //   "1" bit: 1378 Hz tone for one cell (2 cycles).
+        // Continuous phase across cells, half-wave rectification.
         let cellMicros = 1450.6
         let samplesPerCell = Self.pcmSampleRate * cellMicros / 1_000_000  // 23.21
         let totalSamples = Int(Double(bits.count) * samplesPerCell + 0.5)
 
-        // Peak height = 0x60 (96). Above threshold 0x12 by a comfortable
-        // margin, below saturation, and lines up with Classic99's typical
-        // post-auto-level peak amplitudes (~58 average peak).
-        let peakHeight: UInt8 = 0x60
-        // Peak width = 4 samples (~250 µs). Wider than the inline TB-loop's
-        // sample interval so the spin loop reliably catches every peak.
-        let pulseSamples = 4
+        let peakAmplitude: Double = 160.0
 
+        let dPhaseZero = 2.0 * .pi / samplesPerCell
+        var phase: Double = 0.0
         var pcm = [UInt8](repeating: 0, count: totalSamples)
+        var sampleIdx = 0
 
-        for (bitIndex, bit) in bits.enumerated() {
-            // Peak at every cell boundary (placed at end of this cell;
-            // adjacent cells share the same boundary peak).
-            let boundary = Int(Double(bitIndex + 1) * samplesPerCell + 0.5)
-            for i in 0..<pulseSamples {
-                let idx = boundary + i - pulseSamples / 2
-                if idx >= 0 && idx < totalSamples { pcm[idx] = peakHeight }
-            }
-            // Extra mid-cell peak for "1" bits.
-            if bit == 1 {
-                let mid = Int((Double(bitIndex) + 0.5) * samplesPerCell + 0.5)
-                for i in 0..<pulseSamples {
-                    let idx = mid + i - pulseSamples / 2
-                    if idx >= 0 && idx < totalSamples { pcm[idx] = peakHeight }
+        for bit in bits {
+            let dPhase = dPhaseZero * (bit == 1 ? 2.0 : 1.0)
+            let nextBoundary = min(totalSamples,
+                                   Int((Double(sampleIdx) + samplesPerCell).rounded()))
+            while sampleIdx < nextBoundary {
+                let v = sin(phase)
+                if v > 0 {
+                    pcm[sampleIdx] = UInt8(max(0, min(255, (v * peakAmplitude).rounded())))
                 }
+                phase += dPhase
+                if phase >= 2.0 * .pi { phase -= 2.0 * .pi }
+                sampleIdx += 1
             }
         }
 

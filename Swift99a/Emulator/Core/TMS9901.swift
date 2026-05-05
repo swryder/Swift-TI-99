@@ -389,6 +389,9 @@ final class TMS9901: Peripheral {
             let new = (data != 0)
             if new != cs1MotorOn {
                 print("[TMS9901] cs1MotorOn := \(new)")
+                CassetteTrace.log(currentCycle: cpu?.totalCycleCount ?? 0,
+                                  event: "MOTORBIT",
+                                  details: "bit=22 cs1=\(new ? 1 : 0)")
             }
             cs1MotorOn = new
 
@@ -396,6 +399,9 @@ final class TMS9901: Peripheral {
             let new = (data != 0)
             if new != cs2MotorOn {
                 print("[TMS9901] cs2MotorOn := \(new)")
+                CassetteTrace.log(currentCycle: cpu?.totalCycleCount ?? 0,
+                                  event: "MOTORBIT",
+                                  details: "bit=23 cs2=\(new ? 1 : 0)")
             }
             cs2MotorOn = new
 
@@ -403,6 +409,9 @@ final class TMS9901: Peripheral {
             let new = (data != 0)
             if new != cassetteAudioGateClosed {
                 print("[TMS9901] audioGateClosed := \(new)")
+                CassetteTrace.log(currentCycle: cpu?.totalCycleCount ?? 0,
+                                  event: "MOTORBIT",
+                                  details: "bit=24 audiogate=\(new ? 1 : 0)")
             }
             cassetteAudioGateClosed = new
 
