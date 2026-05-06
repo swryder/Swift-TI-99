@@ -159,41 +159,56 @@ final class CassetteImage {
             }
         }
 
-        // Render bits to PCM as half-wave-rectified continuous-phase FSK.
-        // Classic99's BYTE r4= log shows that Swift99a's WAV path decodes
-        // the SAME byte sequence Classic99 does (matched first 30 bytes
-        // exactly), so the cassette ROM does decode our FSK signal
-        // correctly — at least for the first stretch. The .TITape bug
-        // is therefore not a fundamentally-wrong encoding scheme; it's
-        // some narrower pipeline issue that needs to be diff'd against
-        // the WAV path.
+        // Render bits to PCM as biphase-mark (FM) encoded peaks. This is
+        // what TI cassettes actually produce on tape — a transition at
+        // every cell boundary, plus an extra mid-cell transition for
+        // "1" bits. After half-wave rectification the cassette ROM sees:
         //
-        //   "0" bit: 689 Hz tone for one cell (1 cycle).
-        //   "1" bit: 1378 Hz tone for one cell (2 cycles).
-        // Continuous phase across cells, half-wave rectification.
+        //   "0" bit: 1 peak per cell (one transition per cell)
+        //   "1" bit: 2 peaks per cell (two transitions per cell)
+        //
+        // Earlier the synth was switched to a continuous-phase FSK
+        // scheme (1 vs 2 sine cycles per cell) which produces a similar
+        // peak count but with the wrong inter-cell phase relationship —
+        // the cassette ROM's bit-decoder relies on biphase-mark timing.
+        //
+        // Each peak is a smooth half-sine pulse ~6 samples wide, which
+        // approximates the shape Classic99 sees from real WAV recordings
+        // (narrow peaks above threshold within a wider above-threshold
+        // ramp). The trailing auto-level pass below normalises mean=29
+        // to match the WAV pipeline byte-for-byte.
         let cellMicros = 1450.6
         let samplesPerCell = Self.pcmSampleRate * cellMicros / 1_000_000  // 23.21
         let totalSamples = Int(Double(bits.count) * samplesPerCell + 0.5)
 
         let peakAmplitude: Double = 160.0
+        let pulseHalfWidth = 3  // half-sine pulse spans 6 samples total
 
-        let dPhaseZero = 2.0 * .pi / samplesPerCell
-        var phase: Double = 0.0
         var pcm = [UInt8](repeating: 0, count: totalSamples)
-        var sampleIdx = 0
 
-        for bit in bits {
-            let dPhase = dPhaseZero * (bit == 1 ? 2.0 : 1.0)
-            let nextBoundary = min(totalSamples,
-                                   Int((Double(sampleIdx) + samplesPerCell).rounded()))
-            while sampleIdx < nextBoundary {
-                let v = sin(phase)
-                if v > 0 {
-                    pcm[sampleIdx] = UInt8(max(0, min(255, (v * peakAmplitude).rounded())))
-                }
-                phase += dPhase
-                if phase >= 2.0 * .pi { phase -= 2.0 * .pi }
-                sampleIdx += 1
+        // Place a smooth half-sine pulse centred at `centre` (in samples).
+        func placePulse(centre: Int) {
+            let span = pulseHalfWidth * 2
+            for i in 0..<span {
+                let idx = centre - pulseHalfWidth + i
+                guard idx >= 0 && idx < totalSamples else { continue }
+                // Half-sine over the pulse span: 0 at edges, peak in middle.
+                let phase = Double(i) / Double(span - 1) * .pi
+                let v = sin(phase) * peakAmplitude
+                let rounded = UInt8(max(0, min(255, v.rounded())))
+                // Take max with existing in case adjacent cell pulses overlap.
+                if rounded > pcm[idx] { pcm[idx] = rounded }
+            }
+        }
+
+        for (bitIndex, bit) in bits.enumerated() {
+            // Boundary pulse at the end of this cell (always).
+            let boundary = Int(Double(bitIndex + 1) * samplesPerCell + 0.5)
+            placePulse(centre: boundary)
+            // Mid-cell pulse for "1" bits only.
+            if bit == 1 {
+                let mid = Int((Double(bitIndex) + 0.5) * samplesPerCell + 0.5)
+                placePulse(centre: mid)
             }
         }
 
