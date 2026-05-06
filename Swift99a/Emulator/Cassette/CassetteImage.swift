@@ -126,15 +126,15 @@ final class CassetteImage {
         let leaderBytes = 768
         byteStream.reserveCapacity(leaderBytes + 3 + recordCount * 2 * (8 + 1 + recordSize + 1))
 
-        // Leader = 0xFF mark bytes (= "1" bits). Real TI cassette tape
-        // uses a long mark-tone leader which under biphase-mark coding
-        // produces the documented 689 Hz peak rate after half-wave
-        // rectification. Earlier this was 0x00 bytes which (under our
-        // simplified pulse-placement synth) accidentally produced the
-        // same 689 Hz rate but with INVERTED bit-to-peak-pattern
-        // mapping — leader detection passed, but every data bit was
-        // also inverted, so byte values came out scrambled.
-        byteStream.append(contentsOf: Array(repeating: UInt8(0xFF), count: leaderBytes))
+        // Leader + mark + count×2.
+        // Note: 0x00 leader + the cycle mapping below empirically gets
+        // closer to working than 0xFF leader (which produced ERROR -
+        // NO DATA FOUND, leader detection failing). The TI cassette
+        // protocol byte values for leader vs mark vs sync are still
+        // unclear without same-content WAV+TITape ground truth, but
+        // the 0x00-leader form at least gets the ROM into byte-decode.
+        byteStream.append(contentsOf: Array(repeating: UInt8(0), count: leaderBytes))
+        byteStream.append(0xFF)
         let count = UInt8(min(recordCount, 255))
         byteStream.append(count)
         byteStream.append(count)
@@ -204,14 +204,17 @@ final class CassetteImage {
         var pcm = [UInt8](repeating: 0, count: totalSamples)
         var sampleIdx = 0
 
-        // Bit-to-cycle mapping per TI cassette convention:
-        //   "1" bit = mark tone = 689 Hz (= 1 sine cycle per cell)
-        //   "0" bit = space tone = 1378 Hz (= 2 sine cycles per cell)
-        // (Note: this is INVERTED from "natural" FSK where "0" is the
-        // base frequency. TI cassettes use mark = "1" by convention,
-        // and the ROM's bit decoder is calibrated for that mapping.)
+        // Bit-to-cycle mapping (empirical):
+        //   "0" bit = 1 sine cycle per cell (689 Hz)
+        //   "1" bit = 2 sine cycles per cell (1378 Hz)
+        // The flipped mapping ("1" → 1 cycle) was tried per the TI
+        // cassette mark-tone convention but produced "NO DATA FOUND"
+        // (leader detection failed). Empirically the original mapping
+        // gets the ROM further (to "ERROR DETECTED IN DATA"), so we
+        // use it pending a definitive same-content WAV+TITape ground
+        // truth that would let us pin down the exact convention.
         for bit in bits {
-            let dPhase = dPhaseZero * (bit == 1 ? 1.0 : 2.0)
+            let dPhase = dPhaseZero * (bit == 1 ? 2.0 : 1.0)
             let nextBoundary = min(totalSamples,
                                    Int((Double(sampleIdx) + samplesPerCell).rounded()))
             while sampleIdx < nextBoundary {
