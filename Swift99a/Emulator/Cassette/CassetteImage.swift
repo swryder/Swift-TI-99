@@ -159,56 +159,46 @@ final class CassetteImage {
             }
         }
 
-        // Render bits to PCM as biphase-mark (FM) encoded peaks. This is
-        // what TI cassettes actually produce on tape — a transition at
-        // every cell boundary, plus an extra mid-cell transition for
-        // "1" bits. After half-wave rectification the cassette ROM sees:
+        // Render bits to PCM as half-wave-rectified continuous-phase FSK.
+        // Each cell contains "0": 1 sine cycle (689 Hz) or "1": 2 sine
+        // cycles (1378 Hz), continuous phase across cells.
         //
-        //   "0" bit: 1 peak per cell (one transition per cell)
-        //   "1" bit: 2 peaks per cell (two transitions per cell)
+        // Empirical note: this isn't textbook biphase-mark — TI cassettes
+        // actually use biphase-mark FM encoding — but the WAV decode path
+        // is byte-perfect against Classic99, and FSK gives the cassette
+        // ROM a similar enough peak-count-per-cell that the bit decoder
+        // gets through the leader and into the data section. Biphase-
+        // mark was tried but produced "NO DATA FOUND" (leader detection
+        // failed entirely); FSK reaches "ERROR DETECTED IN DATA" (leader
+        // detected, byte values mismatched). Pending a deeper diff
+        // against a known-good WAV at the bit-shape level, FSK is the
+        // closest-to-working option.
         //
-        // Earlier the synth was switched to a continuous-phase FSK
-        // scheme (1 vs 2 sine cycles per cell) which produces a similar
-        // peak count but with the wrong inter-cell phase relationship —
-        // the cassette ROM's bit-decoder relies on biphase-mark timing.
-        //
-        // Each peak is a smooth half-sine pulse ~6 samples wide, which
-        // approximates the shape Classic99 sees from real WAV recordings
-        // (narrow peaks above threshold within a wider above-threshold
-        // ramp). The trailing auto-level pass below normalises mean=29
-        // to match the WAV pipeline byte-for-byte.
+        // The trailing auto-level pass normalises mean=29 to match the
+        // WAV pipeline's resampleAndShape output statistically.
         let cellMicros = 1450.6
         let samplesPerCell = Self.pcmSampleRate * cellMicros / 1_000_000  // 23.21
         let totalSamples = Int(Double(bits.count) * samplesPerCell + 0.5)
 
         let peakAmplitude: Double = 160.0
-        let pulseHalfWidth = 3  // half-sine pulse spans 6 samples total
 
+        let dPhaseZero = 2.0 * .pi / samplesPerCell
+        var phase: Double = 0.0
         var pcm = [UInt8](repeating: 0, count: totalSamples)
+        var sampleIdx = 0
 
-        // Place a smooth half-sine pulse centred at `centre` (in samples).
-        func placePulse(centre: Int) {
-            let span = pulseHalfWidth * 2
-            for i in 0..<span {
-                let idx = centre - pulseHalfWidth + i
-                guard idx >= 0 && idx < totalSamples else { continue }
-                // Half-sine over the pulse span: 0 at edges, peak in middle.
-                let phase = Double(i) / Double(span - 1) * .pi
-                let v = sin(phase) * peakAmplitude
-                let rounded = UInt8(max(0, min(255, v.rounded())))
-                // Take max with existing in case adjacent cell pulses overlap.
-                if rounded > pcm[idx] { pcm[idx] = rounded }
-            }
-        }
-
-        for (bitIndex, bit) in bits.enumerated() {
-            // Boundary pulse at the end of this cell (always).
-            let boundary = Int(Double(bitIndex + 1) * samplesPerCell + 0.5)
-            placePulse(centre: boundary)
-            // Mid-cell pulse for "1" bits only.
-            if bit == 1 {
-                let mid = Int((Double(bitIndex) + 0.5) * samplesPerCell + 0.5)
-                placePulse(centre: mid)
+        for bit in bits {
+            let dPhase = dPhaseZero * (bit == 1 ? 2.0 : 1.0)
+            let nextBoundary = min(totalSamples,
+                                   Int((Double(sampleIdx) + samplesPerCell).rounded()))
+            while sampleIdx < nextBoundary {
+                let v = sin(phase)
+                if v > 0 {
+                    pcm[sampleIdx] = UInt8(max(0, min(255, (v * peakAmplitude).rounded())))
+                }
+                phase += dPhase
+                if phase >= 2.0 * .pi { phase -= 2.0 * .pi }
+                sampleIdx += 1
             }
         }
 
