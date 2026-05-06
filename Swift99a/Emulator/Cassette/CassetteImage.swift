@@ -126,9 +126,15 @@ final class CassetteImage {
         let leaderBytes = 768
         byteStream.reserveCapacity(leaderBytes + 3 + recordCount * 2 * (8 + 1 + recordSize + 1))
 
-        // Leader + mark + count×2
-        byteStream.append(contentsOf: Array(repeating: UInt8(0), count: leaderBytes))
-        byteStream.append(0xFF)
+        // Leader = 0xFF mark bytes (= "1" bits). Real TI cassette tape
+        // uses a long mark-tone leader which under biphase-mark coding
+        // produces the documented 689 Hz peak rate after half-wave
+        // rectification. Earlier this was 0x00 bytes which (under our
+        // simplified pulse-placement synth) accidentally produced the
+        // same 689 Hz rate but with INVERTED bit-to-peak-pattern
+        // mapping — leader detection passed, but every data bit was
+        // also inverted, so byte values came out scrambled.
+        byteStream.append(contentsOf: Array(repeating: UInt8(0xFF), count: leaderBytes))
         let count = UInt8(min(recordCount, 255))
         byteStream.append(count)
         byteStream.append(count)
@@ -198,8 +204,14 @@ final class CassetteImage {
         var pcm = [UInt8](repeating: 0, count: totalSamples)
         var sampleIdx = 0
 
+        // Bit-to-cycle mapping per TI cassette convention:
+        //   "1" bit = mark tone = 689 Hz (= 1 sine cycle per cell)
+        //   "0" bit = space tone = 1378 Hz (= 2 sine cycles per cell)
+        // (Note: this is INVERTED from "natural" FSK where "0" is the
+        // base frequency. TI cassettes use mark = "1" by convention,
+        // and the ROM's bit decoder is calibrated for that mapping.)
         for bit in bits {
-            let dPhase = dPhaseZero * (bit == 1 ? 2.0 : 1.0)
+            let dPhase = dPhaseZero * (bit == 1 ? 1.0 : 2.0)
             let nextBoundary = min(totalSamples,
                                    Int((Double(sampleIdx) + samplesPerCell).rounded()))
             while sampleIdx < nextBoundary {
