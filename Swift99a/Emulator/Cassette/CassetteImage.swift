@@ -183,7 +183,18 @@ final class CassetteImage {
         let peakAmplitude: Double = 160.0
 
         let dPhaseZero = 2.0 * .pi / samplesPerCell
-        var phase: Double = 0.0
+        // Initial phase chosen so the first peak lands at sample ~10 of
+        // each "0" cell, matching real WAV recordings (analyzed against
+        // CATALOG.wav from Comparison/: 44.1 kHz peak at sample 27 =
+        // 16 kHz sample 9.8, with a 64-sample = 1450 µs = 689 Hz period
+        // that exactly matches our cellMicros). With startPhase=0 the
+        // peak naturally lands at sample 5.75 (quarter into the cell);
+        // shifting by ~4 samples brings it to where real cassette
+        // recordings put it, which is what the cassette ROM's bit
+        // decoder is calibrated for.
+        let peakSampleTarget = 9.8
+        var phase: Double = .pi / 2.0 - peakSampleTarget * dPhaseZero
+        if phase < 0 { phase += 2.0 * .pi }
         var pcm = [UInt8](repeating: 0, count: totalSamples)
         var sampleIdx = 0
 
