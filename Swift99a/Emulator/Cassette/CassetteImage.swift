@@ -197,6 +197,25 @@ final class CassetteImage {
             }
         }
 
+        // Auto-level to mean = 29, identical to what `resampleAndShape`
+        // does to the WAV pipeline. The WAV decode path is byte-perfect
+        // vs Classic99 with this normalisation in place; the .titape
+        // synth previously emitted raw sine peaks (mean ~80, amplitude
+        // 160) and the cassette ROM's leader-period measurement
+        // computed the wrong timer load from that, causing ERROR
+        // DETECTED IN DATA on every .titape load. Same input shape
+        // through both pipelines = consistent decode behaviour.
+        var sum: Int = 0
+        for v in pcm { sum += Int(v) }
+        let avg = Double(sum) / Double(max(1, pcm.count))
+        if avg > 0 {
+            let scale = 29.0 / avg
+            for i in 0..<pcm.count {
+                let scaled = (Double(pcm[i]) * scale).rounded()
+                pcm[i] = UInt8(max(0, min(255, scaled)))
+            }
+        }
+
         return pcm
     }
 
