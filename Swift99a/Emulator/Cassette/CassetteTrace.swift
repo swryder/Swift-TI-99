@@ -63,7 +63,7 @@ enum CassetteTrace {
             # format: cycle event key=value...
             # events:
             #   MOTOR        — CRU motor signal change
-            #   LOAD         — WAV/TITape post-processed; first 16 PCM samples
+            #   LOAD         — WAV post-processed; first 16 PCM samples
             #   CDIN         — every TB 27 read (post-active-low inversion)
             #   TIMERFIRE    — TMS9901 timer expired and latched
             #   TIMERACK     — CPU wrote to CRU bit 3 (clear timer latch)

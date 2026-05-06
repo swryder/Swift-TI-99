@@ -16,8 +16,7 @@
 // flat 8-bit unsigned PCM buffer at 16 kHz. The CDIN bit is just a threshold
 // of the current sample, and the same samples are mixed into the speaker
 // when motor + audio gate are open. WAV recordings of real TI tapes drop in
-// directly; `.titape` containers have their bit stream resynthesised into
-// the equivalent PCM at load time inside CassetteImage.
+// directly.
 
 import Foundation
 
@@ -38,10 +37,9 @@ final class Cassette: AudioSource {
 
     /// Threshold for converting a PCM byte to a CDIN bit. Matches
     /// Classic99's tape.cpp `cutoff = 0x12`. The cassette image stores
-    /// half-wave-rectified, auto-levelled audio (mean ≈ 29) for both
-    /// loaded WAVs and synthesised TITape, so anything ≥ 0x12 is a peak
-    /// at a flux transition. The active-low inversion happens in
-    /// `readDataIn()` after this threshold check.
+    /// half-wave-rectified, auto-levelled audio (mean ≈ 29), so
+    /// anything ≥ 0x12 is a peak at a flux transition. The active-low
+    /// inversion happens in `readDataIn()` after this threshold check.
     private static let cdinThreshold: UInt8 = 0x12
 
     /// CPU clock in MHz; cycles ÷ this = microseconds.

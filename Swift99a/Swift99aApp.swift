@@ -288,16 +288,13 @@ struct Swift99aApp: App {
         }
     }
 
-    /// Opens a panel for cassette tape files. Supports Win994a's `.titape`
-    /// format and audio recordings of real TI cassettes (WAV / MP3 / etc.).
-    /// Both load into the same internal 16 kHz PCM buffer.
+    /// Opens a panel for cassette tape files. Audio recordings of real TI
+    /// cassettes (WAV / MP3 / etc.) load into the internal 16 kHz PCM buffer.
     private func openCassetteFile() {
         let panel = NSOpenPanel()
         panel.title = "Load Cassette Tape"
-        panel.message = "Select a tape file (.titape, .wav, .mp3)"
+        panel.message = "Select a tape audio file (.wav, .mp3)"
         panel.allowedContentTypes = [
-            .init(filenameExtension: "titape")!,
-            .init(filenameExtension: "TITape")!,
             .init(filenameExtension: "wav")!,
             .init(filenameExtension: "wave")!,
             .init(filenameExtension: "mp3")!,

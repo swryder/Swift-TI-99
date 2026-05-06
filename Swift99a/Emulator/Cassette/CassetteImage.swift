@@ -1,24 +1,12 @@
 // Swift 99/a
 //
 // CassetteImage.swift
-// Loaded tape image — the data behind a `.titape`, `.wav`, or `.mp3` file.
+// Loaded tape image — the data behind a `.wav` or `.mp3` file.
 // Internally we store everything as 8-bit unsigned mono PCM at 16 kHz, the
 // same shape Classic99 uses for its tape buffer (see classic99 console/tape.cpp).
 // The Cassette device consumes this PCM directly: CDIN is read as
 // `pcm[currentPos] >= threshold`, and the same samples are mixed into the
-// speaker. WAV files of real TI cassette recordings drop straight in;
-// `.titape` containers are demodulated post-FSK so we resynthesise the
-// equivalent waveform at load time using the canonical leader / record
-// framing.
-//
-// TITape format (reverse-engineered from Win994a sample files):
-//
-//   Offset  Size  Field
-//   0x00    8     Magic ASCII "TI-TAPE\0"
-//   0x08    4     u32 LE — current tape head position in bytes (0 = rewound)
-//   0x0C    4     u32 LE — total payload length in bytes (= file size − 16)
-//   0x10    N     Raw payload — concatenated data bytes the cassette would
-//                 have produced after demodulation.
+// speaker. WAV files of real TI cassette recordings drop straight in.
 
 import Foundation
 import AVFoundation
@@ -26,22 +14,15 @@ import AVFoundation
 final class CassetteImage {
 
     enum Source: Equatable {
-        case tiTape       // Win994a .titape (demodulated bytes; PCM synthesised)
         case wav          // 8-bit unsigned PCM decoded from WAV/MP3
     }
 
     enum LoadError: Error, LocalizedError {
-        case fileTooSmall
-        case badMagic
-        case truncated
         case unsupportedExtension(String)
         case audioDecodeFailed(String)
 
         var errorDescription: String? {
             switch self {
-            case .fileTooSmall: return "Tape file is too small to contain a TITape header."
-            case .badMagic: return "Tape file does not start with the TITape magic bytes."
-            case .truncated: return "Tape payload is shorter than the header advertises."
             case .unsupportedExtension(let ext):
                 return "Unsupported tape file type: .\(ext)"
             case .audioDecodeFailed(let msg):
@@ -76,178 +57,11 @@ final class CassetteImage {
     static func load(from url: URL) throws -> CassetteImage {
         let ext = url.pathExtension.lowercased()
         switch ext {
-        case "titape":
-            return try loadTiTape(from: url)
         case "wav", "wave", "mp3", "m4a", "aif", "aiff", "caf":
             return try loadAudioFile(from: url)
         default:
             throw LoadError.unsupportedExtension(ext)
         }
-    }
-
-    // MARK: - TITape
-
-    private static func loadTiTape(from url: URL) throws -> CassetteImage {
-        let data = try Data(contentsOf: url)
-        guard data.count >= 16 else { throw LoadError.fileTooSmall }
-
-        let magic: [UInt8] = [0x54, 0x49, 0x2D, 0x54, 0x41, 0x50, 0x45, 0x00]
-        guard data.prefix(8).elementsEqual(magic) else { throw LoadError.badMagic }
-
-        let length = readUInt32LE(data, offset: 12)
-        guard 16 + length <= data.count else { throw LoadError.truncated }
-
-        let payload = Array(data[16..<(16 + length)])
-        let pcm = synthesizePCM(fromTiTapePayload: payload)
-        let name = url.deletingPathExtension().lastPathComponent
-
-        return CassetteImage(url: url, source: .tiTape, displayName: name, pcm: pcm)
-    }
-
-    /// Builds a PCM waveform that matches what a real TI cassette would have
-    /// produced for the given post-demod byte stream. Steps:
-    ///   1. Wrap the bytes with the canonical cassette framing (zero-byte
-    ///      leader, 0xFF mark, count repeated, then each 64-byte record
-    ///      written twice with sync + mark + checksum).
-    ///   2. Expand to a bit stream (MSB first per byte).
-    ///   3. Render each bit cell as biphase-mark (FM): a transition at
-    ///      every cell boundary, plus a mid-cell transition for `1` bits
-    ///      only. This produces the documented 689/1378 Hz transition
-    ///      rates the cassette ROM expects (one transition per cell during
-    ///      the all-zeros leader, two transitions per cell during a `1`).
-    private static func synthesizePCM(fromTiTapePayload payload: [UInt8]) -> [UInt8] {
-        let recordSize = 64
-        let recordCount = max(1, (payload.count + recordSize - 1) / recordSize)
-
-        var byteStream: [UInt8] = []
-        // 768 zero bytes — the canonical TI cassette leader length per
-        // Nouspikel's documentation. ~8.9 s of 689 Hz tone, plenty of
-        // time for the ROM's auto-tune to lock onto the bit cell rate.
-        let leaderBytes = 768
-        byteStream.reserveCapacity(leaderBytes + 3 + recordCount * 2 * (8 + 1 + recordSize + 1))
-
-        // Leader + mark + count×2.
-        // Note: 0x00 leader + the cycle mapping below empirically gets
-        // closer to working than 0xFF leader (which produced ERROR -
-        // NO DATA FOUND, leader detection failing). The TI cassette
-        // protocol byte values for leader vs mark vs sync are still
-        // unclear without same-content WAV+TITape ground truth, but
-        // the 0x00-leader form at least gets the ROM into byte-decode.
-        byteStream.append(contentsOf: Array(repeating: UInt8(0), count: leaderBytes))
-        byteStream.append(0xFF)
-        let count = UInt8(min(recordCount, 255))
-        byteStream.append(count)
-        byteStream.append(count)
-
-        // Records, each written twice
-        for r in 0..<recordCount {
-            let start = r * recordSize
-            let end = min(start + recordSize, payload.count)
-            var record = Array(payload[start..<end])
-            while record.count < recordSize { record.append(0) }
-            var sum: UInt32 = 0
-            for b in record { sum &+= UInt32(b) }
-            let checksum = UInt8(sum & 0xFF)
-            for _ in 0..<2 {
-                byteStream.append(contentsOf: Array(repeating: UInt8(0), count: 8)) // sync
-                byteStream.append(0xFF)                                              // mark
-                byteStream.append(contentsOf: record)
-                byteStream.append(checksum)
-            }
-        }
-
-        // Bit stream, MSB first
-        var bits: [UInt8] = []
-        bits.reserveCapacity(byteStream.count * 8)
-        for byte in byteStream {
-            for shift in (0..<8).reversed() {
-                bits.append((byte >> shift) & 1)
-            }
-        }
-
-        // Render bits to PCM as half-wave-rectified continuous-phase FSK.
-        // Each cell contains "0": 1 sine cycle (689 Hz) or "1": 2 sine
-        // cycles (1378 Hz), continuous phase across cells.
-        //
-        // Empirical note: this isn't textbook biphase-mark — TI cassettes
-        // actually use biphase-mark FM encoding — but the WAV decode path
-        // is byte-perfect against Classic99, and FSK gives the cassette
-        // ROM a similar enough peak-count-per-cell that the bit decoder
-        // gets through the leader and into the data section. Biphase-
-        // mark was tried but produced "NO DATA FOUND" (leader detection
-        // failed entirely); FSK reaches "ERROR DETECTED IN DATA" (leader
-        // detected, byte values mismatched). Pending a deeper diff
-        // against a known-good WAV at the bit-shape level, FSK is the
-        // closest-to-working option.
-        //
-        // The trailing auto-level pass normalises mean=29 to match the
-        // WAV pipeline's resampleAndShape output statistically.
-        let cellMicros = 1450.6
-        let samplesPerCell = Self.pcmSampleRate * cellMicros / 1_000_000  // 23.21
-        let totalSamples = Int(Double(bits.count) * samplesPerCell + 0.5)
-
-        let peakAmplitude: Double = 160.0
-
-        let dPhaseZero = 2.0 * .pi / samplesPerCell
-        // Initial phase chosen so the first peak lands at sample ~10 of
-        // each "0" cell, matching real WAV recordings (analyzed against
-        // CATALOG.wav from Comparison/: 44.1 kHz peak at sample 27 =
-        // 16 kHz sample 9.8, with a 64-sample = 1450 µs = 689 Hz period
-        // that exactly matches our cellMicros). With startPhase=0 the
-        // peak naturally lands at sample 5.75 (quarter into the cell);
-        // shifting by ~4 samples brings it to where real cassette
-        // recordings put it, which is what the cassette ROM's bit
-        // decoder is calibrated for.
-        let peakSampleTarget = 9.8
-        var phase: Double = .pi / 2.0 - peakSampleTarget * dPhaseZero
-        if phase < 0 { phase += 2.0 * .pi }
-        var pcm = [UInt8](repeating: 0, count: totalSamples)
-        var sampleIdx = 0
-
-        // Bit-to-cycle mapping (empirical):
-        //   "0" bit = 1 sine cycle per cell (689 Hz)
-        //   "1" bit = 2 sine cycles per cell (1378 Hz)
-        // The flipped mapping ("1" → 1 cycle) was tried per the TI
-        // cassette mark-tone convention but produced "NO DATA FOUND"
-        // (leader detection failed). Empirically the original mapping
-        // gets the ROM further (to "ERROR DETECTED IN DATA"), so we
-        // use it pending a definitive same-content WAV+TITape ground
-        // truth that would let us pin down the exact convention.
-        for bit in bits {
-            let dPhase = dPhaseZero * (bit == 1 ? 2.0 : 1.0)
-            let nextBoundary = min(totalSamples,
-                                   Int((Double(sampleIdx) + samplesPerCell).rounded()))
-            while sampleIdx < nextBoundary {
-                let v = sin(phase)
-                if v > 0 {
-                    pcm[sampleIdx] = UInt8(max(0, min(255, (v * peakAmplitude).rounded())))
-                }
-                phase += dPhase
-                if phase >= 2.0 * .pi { phase -= 2.0 * .pi }
-                sampleIdx += 1
-            }
-        }
-
-        // Auto-level to mean = 29, identical to what `resampleAndShape`
-        // does to the WAV pipeline. The WAV decode path is byte-perfect
-        // vs Classic99 with this normalisation in place; the .titape
-        // synth previously emitted raw sine peaks (mean ~80, amplitude
-        // 160) and the cassette ROM's leader-period measurement
-        // computed the wrong timer load from that, causing ERROR
-        // DETECTED IN DATA on every .titape load. Same input shape
-        // through both pipelines = consistent decode behaviour.
-        var sum: Int = 0
-        for v in pcm { sum += Int(v) }
-        let avg = Double(sum) / Double(max(1, pcm.count))
-        if avg > 0 {
-            let scale = 29.0 / avg
-            for i in 0..<pcm.count {
-                let scaled = (Double(pcm[i]) * scale).rounded()
-                pcm[i] = UInt8(max(0, min(255, scaled)))
-            }
-        }
-
-        return pcm
     }
 
     // MARK: - WAV / MP3 / M4A
