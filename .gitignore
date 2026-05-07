@@ -17,3 +17,9 @@ Cart ROM Dumps/
 Ti-Cartridges/
 TIDISKS/
 FinalGROM99/
+
+# Local build / release artifacts (DMG mount points, sparse images,
+# cassette debug traces). The shipping DMG itself is committed by name.
+Swift99a [0-9]*[0-9]/
+*.asif
+tools/cassette_trace.txt
