@@ -156,15 +156,6 @@ final class TMS9901: Peripheral {
             if elapsed >= cellCycles {
                 timerIntReq = true
                 timerStartCycle += cellCycles * (elapsed / cellCycles)
-                debugTimerFireCount += 1
-                // [trace] mirror Classic99 TIMERFIRE start=N
-                CassetteTrace.log(currentCycle: cpu.totalCycleCount,
-                                  event: "TIMERFIRE",
-                                  details: "start=\(timerInitial)")
-                if debugTimerFireCount <= 5 || debugTimerFireCount % 100_000 == 0 {
-                    print("[TMS9901] timer FIRE #\(debugTimerFireCount) " +
-                          "(timerInitial=\(timerInitial))")
-                }
             }
         }
 
@@ -320,13 +311,6 @@ final class TMS9901: Peripheral {
                     timerInitial &= ~mask
                 }
                 timerInitial &= 0x3FFF
-                // [trace] CRUWRITE — log BOTH SBOs and SBZs in clock mode
-                // so we don't miss bit-clears (the cassette ROM does SBZ
-                // to clear high bits when computing the leader-period
-                // timer load).
-                CassetteTrace.log(currentCycle: cpu?.totalCycleCount ?? 0,
-                                  event: "CRUWRITE",
-                                  details: "op=\(data != 0 ? "SBO" : "SBZ") bit=\(addr) clockmode=1 starttimer=\(timerInitial)")
             } else {
                 // I/O mode: set/clear interrupt mask bit.
                 let prev = intMask
@@ -348,19 +332,7 @@ final class TMS9901: Peripheral {
                 // each timer tick before the next one can fire — without
                 // it the latch stays set and the interrupt loops forever.
                 if addr == 3 {
-                    let wasReq = timerIntReq
                     timerIntReq = false
-                    // [trace] TIMERACK — matches Classic99 op=SBO/SBZ had=N
-                    let op = data != 0 ? "SBO" : "SBZ"
-                    CassetteTrace.log(currentCycle: cpu?.totalCycleCount ?? 0,
-                                      event: "TIMERACK",
-                                      details: "op=\(op) had=\(wasReq ? 1 : 0)")
-                    if wasReq {
-                        debugTimerAckCount += 1
-                        if debugTimerAckCount <= 5 || debugTimerAckCount % 100_000 == 0 {
-                            print("[TMS9901] timer ACK #\(debugTimerAckCount)")
-                        }
-                    }
                 }
                 // Mask changes (bits 1-3) and timer ack (bit 3) can change
                 // whether level-1 should be asserted to the CPU. The CPU
@@ -389,10 +361,6 @@ final class TMS9901: Peripheral {
             let new = (data != 0)
             if new != cs1MotorOn {
                 let nowCycle = cpu?.totalCycleCount ?? 0
-                print("[TMS9901] cs1MotorOn := \(new)")
-                CassetteTrace.log(currentCycle: nowCycle,
-                                  event: "MOTORBIT",
-                                  details: "bit=22 cs1=\(new ? 1 : 0)")
                 cs1MotorOn = new
                 // Synchronously re-evaluate motor state so the cassette
                 // captures the exact cycle of the SBO/SBZ instead of
@@ -400,28 +368,12 @@ final class TMS9901: Peripheral {
                 // ~1ms-of-cycles jitter that caused run-to-run drift.
                 cassette?.evaluateMotorState(atCycle: nowCycle)
             }
-            // (assignment moved inside the change-detect branch above so
-            // we don't re-fire callbacks when the value didn't change)
 
         case 23:
-            let new = (data != 0)
-            if new != cs2MotorOn {
-                print("[TMS9901] cs2MotorOn := \(new)")
-                CassetteTrace.log(currentCycle: cpu?.totalCycleCount ?? 0,
-                                  event: "MOTORBIT",
-                                  details: "bit=23 cs2=\(new ? 1 : 0)")
-            }
-            cs2MotorOn = new
+            cs2MotorOn = (data != 0)
 
         case 24:
-            let new = (data != 0)
-            if new != cassetteAudioGateClosed {
-                print("[TMS9901] audioGateClosed := \(new)")
-                CassetteTrace.log(currentCycle: cpu?.totalCycleCount ?? 0,
-                                  event: "MOTORBIT",
-                                  details: "bit=24 audiogate=\(new ? 1 : 0)")
-            }
-            cassetteAudioGateClosed = new
+            cassetteAudioGateClosed = (data != 0)
 
         case 25:
             cassetteDataOut = (data != 0)

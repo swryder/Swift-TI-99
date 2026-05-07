@@ -125,6 +125,12 @@ final class Emulator: ObservableObject {
     private var framesSinceLastStats: Int = 0
     private var cyclesSinceLastStats: Int = 0
 
+    /// Tracks whether the previous real-time tick was cassette-active so
+    /// we can re-anchor `wallClockBase` when transitioning out of the
+    /// deterministic-slicing branch (otherwise the catch-up loop tries
+    /// to make up for time the deterministic branch let drift).
+    private var realTimeWasCassetteActive: Bool = false
+
     func start() {
         guard !running else { return }
 
@@ -178,45 +184,82 @@ final class Emulator: ObservableObject {
         simTimeBase = system.currentTimestamp
 
         if mode == .realTime {
-            // Timer fires at ~1000 Hz wall-clock. Each fire advances
-            // simulated time by EXACTLY 1 ms — no wall-clock catch-up.
-            // The previous wall-clock-anchored catch-up loop ran a
-            // variable number of 1 ms slices per fire (depending on
-            // dispatch jitter), which made the cycle count after N
-            // ticks non-deterministic between runs. That tiny variance
-            // accumulated and caused the cassette decoder's intermittent
-            // ERROR DETECTED IN DATA — same WAV input, two runs would
-            // diverge by ~5 cycles at byte 4436 and the ROM would flip a
-            // conditional at byte 4437.
+            // Timer fires at ~1000 Hz wall-clock.
             //
-            // Trade-off: if the host gets sustained-busy and dispatch
-            // falls behind, the emulator runs slower than real-time
-            // rather than catching up. Audio may skip instead of
-            // double-running. For cassette decoding correctness, that's
-            // strictly better — the cassette ROM is a state machine
-            // that depends on cycle-deterministic behavior.
+            // Two paths inside the handler:
+            //
+            //   • Cassette decode is live (motor on + transport in PLAY +
+            //     tape loaded) → exactly 1 ms of simulated time per fire,
+            //     no wall-clock catch-up. Cycle-deterministic across runs;
+            //     required by the cassette ROM's FSK state machine, which
+            //     fails intermittently if dispatch jitter shifts the cycle
+            //     count by even ~5 cycles at byte boundaries.
+            //
+            //   • Otherwise → wall-clock catch-up loop. Runs as many 1 ms
+            //     slices as needed to keep simulated time aligned with
+            //     wall-clock (capped at +50 ms per tick to avoid the
+            //     spiral-of-death after a long pause). This is what the
+            //     emulator did pre-cassette work and what gives full
+            //     real-time 3 MHz performance even when the host scheduler
+            //     hiccups. Importantly, this includes the case where the
+            //     transport is still in PLAY but the cassette ROM has
+            //     finished and turned the motor off — so we don't get
+            //     stuck in deterministic mode forever after a load.
+            //
+            // When transitioning out of the deterministic branch we
+            // re-anchor `wallClockBase` so the catch-up doesn't try to
+            // recover the time the deterministic branch let drift.
             let newTimer = DispatchSource.makeTimerSource(queue: emulatorQueue)
             newTimer.schedule(deadline: .now(), repeating: .microseconds(1000))
             newTimer.setEventHandler { [weak self] in
                 guard let self = self, self.running else { return }
-                _ = self.system.runSystem(microSeconds: 1000)
-                // If the cassette has run off the end of its PCM and the
-                // ROM is still in some post-decode wait loop (verifying
-                // records, returning to BASIC, etc.), run additional
-                // slices in this same tick to accelerate to host CPU
-                // speed. Classic99 effectively does this because it
-                // doesn't pace CPU to real-time during the post-audio
-                // cleanup; users see "DATA OK" within 1 second of audio
-                // ending instead of having to wait ~1 minute of paced
-                // 3 MHz emulation. Audio output is silent during this
-                // window (no PCM samples left), so no audio glitching.
-                if self.system.pCassette?.isPostAudioWait == true {
-                    for _ in 0..<99 {
+                let cassetteActive = self.system.pCassette?.isDecodeActive == true
+                if self.realTimeWasCassetteActive && !cassetteActive {
+                    self.wallClockBase = CFAbsoluteTimeGetCurrent()
+                    self.simTimeBase = self.system.currentTimestamp
+                }
+                self.realTimeWasCassetteActive = cassetteActive
+
+                if cassetteActive {
+                    let pc = self.system.pCPU?.PC ?? 0
+                    let inCassetteROM = pc >= 0x1400 && pc < 0x1600
+                    if self.system.pCassette?.isPostAudioWait == true && inCassetteROM {
+                        // Burst-run: chew through the cassette ROM's
+                        // post-decode wait at host CPU speed. Audio
+                        // output is silent during this window (PCM
+                        // exhausted), so no glitching. Coarse 10 ms
+                        // slices reduce per-slice peripheral.operate()
+                        // overhead — the FSK decoder isn't running
+                        // any more, so we don't need cycle-accurate
+                        // peripheral interleaving. Up to 1 sec of
+                        // simulated time per tick; we re-check after
+                        // each slice so the moment the ROM clears
+                        // the motor — or PC leaves the decode area
+                        // back to BASIC — we drop straight out.
+                        for _ in 0..<100 {
+                            _ = self.system.runSystem(microSeconds: 10_000)
+                            if self.system.pCassette?.isPostAudioWait != true { break }
+                            let pc = self.system.pCPU?.PC ?? 0
+                            if pc < 0x1400 || pc >= 0x1600 { break }
+                        }
+                    } else {
+                        // Cycle-deterministic 1 ms slice — required
+                        // by the FSK decoder while audio is still
+                        // streaming. Also the path taken when motor
+                        // is still asserted but PC has moved on to
+                        // BASIC (cassette ROM returned without
+                        // clearing the bit), so we run capped 3 MHz
+                        // until the user manually stops the transport.
                         _ = self.system.runSystem(microSeconds: 1000)
-                        // Bail out as soon as the ROM concludes (motor
-                        // off) so we don't keep burst-running into
-                        // BASIC's idle loop.
-                        if self.system.pCassette?.isPostAudioWait != true { break }
+                    }
+                } else {
+                    let wallNow = CFAbsoluteTimeGetCurrent()
+                    let wallElapsed = wallNow - self.wallClockBase
+                    let targetSimTime = self.simTimeBase + wallElapsed * 1_000_000.0
+                    let maxSimTime = self.system.currentTimestamp + 50_000.0
+                    let target = min(targetSimTime, maxSimTime)
+                    while self.system.currentTimestamp < target {
+                        _ = self.system.runSystem(microSeconds: 1000)
                     }
                 }
                 self.updateStats()

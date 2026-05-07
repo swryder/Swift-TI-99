@@ -103,6 +103,18 @@ final class Cassette: AudioSource {
         return min(1, max(0, audioSampleCursor / Double(pcm.count)))
     }
 
+    /// True when the cassette ROM is actively decoding (motor asserted +
+    /// transport in PLAY + tape loaded). Used by the emulator to switch
+    /// between cycle-deterministic 1 ms slicing (required while the
+    /// FSK decoder is running) and wall-clock catch-up (preferred
+    /// otherwise — gives full real-time 3 MHz performance even under
+    /// host scheduler jitter).
+    var isDecodeActive: Bool {
+        !pcm.isEmpty
+            && transportState == .play
+            && (tms9901?.cs1MotorOn ?? false)
+    }
+
     /// True when the cassette is mid-load but the audio has run past
     /// the end of the PCM buffer. The cassette ROM is still spinning
     /// in some post-decode wait loop (verifying records, waiting for
@@ -173,13 +185,6 @@ final class Cassette: AudioSource {
                   "samples=\(pcm.count) (\(String(format: "%.1f", image.durationSeconds)) s), " +
                   "first=\(firstSamples)")
         }
-        // [trace] mirror Classic99 LOAD event with the first 16 samples so
-        // the diff has equivalent inputs at the start of each trace.
-        let cyc = cpu?.totalCycleCount ?? 0
-        CassetteTrace.openIfNeeded(currentCycle: cyc)
-        let first16 = pcm.prefix(16).map { String(format: "%02X", $0) }.joined(separator: " ")
-        CassetteTrace.log(currentCycle: cyc, event: "LOAD",
-                          details: "size=\(pcm.count) first=\(first16)")
     }
 
     func eject() {
@@ -246,17 +251,12 @@ final class Cassette: AudioSource {
             if Self.debugLog {
                 print("[Cassette] MOTOR ON  @cycle \(cycle), startSample=\(sampleAtMotorOn)")
             }
-            CassetteTrace.resetClock(currentCycle: cycle)
-            CassetteTrace.motorActive = true
-            CassetteTrace.log(currentCycle: cycle, event: "MOTOR",
-                              details: "req=1 prevOn=0 state=1 pos=\(sampleAtMotorOn) size=\(pcm.count)")
         } else if !motorRunning, let onCycles = motorOnCycles {
             let elapsedCycles = cycle - onCycles
             let elapsedMicros = Double(elapsedCycles) / Self.cpuMHz
             let advance = Int(elapsedMicros * Self.sampleRate / 1_000_000)
             sampleAtMotorOn = min(sampleAtMotorOn + advance, pcm.count)
             motorOnCycles = nil
-            CassetteTrace.motorActive = false
             if Self.debugLog {
                 print("[Cassette] MOTOR OFF +\(elapsedCycles) cyc " +
                       "(\(String(format: "%.1f", elapsedMicros)) µs), sample=\(sampleAtMotorOn)")
@@ -289,20 +289,6 @@ final class Cassette: AudioSource {
         guard pos < pcm.count else { return 1 }
         let peak = pcm[pos] >= Self.cdinThreshold
         let val: UInt8 = peak ? 0 : 1
-        // [trace] log every CDIN read in the same format as Classic99's
-        // tape.cpp::getTapeBit() hook. Note: bit values are inverted
-        // relative to Classic99 because Classic99 logs `getTapeBit()`'s
-        // raw return BEFORE the active-low inversion happens at CRU read
-        // time. Here we log the post-inversion value (what the ROM sees),
-        // which matches Classic99's `bit=` (which is also post-getTapeBit
-        // semantically — both represent "is there a peak").
-        // To make the bit values directly comparable to Classic99, we log
-        // peak (1=peak, 0=silent), matching `bit=` in the C99 trace.
-        let bitVal: Int = peak ? 1 : 0
-        let sampleVal = Int(pcm[pos])
-        let cyc = cpu?.totalCycleCount ?? 0
-        CassetteTrace.log(currentCycle: cyc, event: "CDIN",
-                          details: "pos=\(pos) sample=\(sampleVal) bit=\(bitVal) motor=\(transportState == .play ? 1 : 0)")
         if Self.debugLog {
             cdinReadCount += 1
             if cdinReadCount <= 5 || cdinReadCount % 250_000 == 0 {

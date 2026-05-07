@@ -192,50 +192,6 @@ final class TMS9900: Peripheral {
                 continue
             }
 
-            // [trace] log instruction PC visits inside cassette code
-            // (>1400-15FF) so we can see exactly which spin-loop branch
-            // the ROM is in and how long it spends in each.
-            CassetteTrace.logPC(currentCycle: totalCycleCount, pc: PC)
-
-            // [trace] byte-assembly + post-mark register-dump hooks.
-            // PC=0x15B6 = end of bit-read loop, R4 holds the assembled
-            // byte. PC=0x14DA/14DE/14E0/14E2/1562 = post-byte state-
-            // machine checkpoints where the cassette ROM compares R5
-            // vs R1 (the mark byte check). Dumping all the workspace
-            // registers gives us a side-by-side view against Classic99.
-            if CassetteTrace.motorActive {
-                let pc = PC
-                if pc == 0x15B6 || pc == 0x14DA || pc == 0x14DE ||
-                   pc == 0x14E0 || pc == 0x14E2 || pc == 0x1562 {
-                    let wp = Int(WP)
-                    func r(_ n: Int) -> UInt16 {
-                        let addr = wp + n * 2
-                        let hi = core.peekMemoryByte(address: addr)
-                        let lo = core.peekMemoryByte(address: addr + 1)
-                        return (UInt16(hi) << 8) | UInt16(lo)
-                    }
-                    func rPeriph(_ n: Int) -> UInt16 {
-                        let addr = wp + n * 2
-                        let hi = core.peekMemoryByteFromPeripheral(address: addr)
-                        let lo = core.peekMemoryByteFromPeripheral(address: addr + 1)
-                        return (UInt16(hi) << 8) | UInt16(lo)
-                    }
-                    if pc == 0x15B6 {
-                        CassetteTrace.log(currentCycle: totalCycleCount,
-                                          event: "BYTE",
-                                          details: String(format: "r4=%04X r7=%04X", r(4), r(7)))
-                    } else {
-                        // R5 logged twice: shadow (what CPU normally reads) vs
-                        // peripheral (raw RAM). If they differ, shadow is stale.
-                        CassetteTrace.log(currentCycle: totalCycleCount,
-                                          event: "PCREGS",
-                                          details: String(format:
-                                            "pc=%04X wp=%04X r0=%04X r1=%04X r2=%04X r3=%04X r4=%04X r5=%04X r5p=%04X r6=%04X r7=%04X r8=%04X r9=%04X r10=%04X",
-                                            pc, UInt16(wp), r(0), r(1), r(2), r(3), r(4), r(5), rPeriph(5), r(6), r(7), r(8), r(9), r(10)))
-                    }
-                }
-            }
-
             // fetch and execute
             currentOp = romword(S: PC)
             addPC(2)
@@ -288,11 +244,9 @@ final class TMS9900: Peripheral {
         if dest & 1 != 0 {
             core.writeMemoryByte(address: adr + 1, cycles: &nCycleCount, accessType: .write, data: c)
             core.writeMemoryByte(address: adr, cycles: &nCycleCount, accessType: .write, data: msb)
-            CassetteTrace.logMemWrite(currentCycle: totalCycleCount, address: adr + 1, data: c, pc: PC)
         } else {
             core.writeMemoryByte(address: adr + 1, cycles: &nCycleCount, accessType: .write, data: lsb)
             core.writeMemoryByte(address: adr, cycles: &nCycleCount, accessType: .write, data: c)
-            CassetteTrace.logMemWrite(currentCycle: totalCycleCount, address: adr, data: c, pc: PC)
         }
     }
 
@@ -310,9 +264,6 @@ final class TMS9900: Peripheral {
         let hi = UInt8((val >> 8) & 0xFF)
         core.writeMemoryByte(address: d + 1, cycles: &nCycleCount, accessType: rmw, data: lo)
         core.writeMemoryByte(address: d, cycles: &nCycleCount, accessType: rmw, data: hi)
-        // [trace] log word writes inside scratchpad as a pair of bytes
-        CassetteTrace.logMemWrite(currentCycle: totalCycleCount, address: d, data: hi, pc: PC)
-        CassetteTrace.logMemWrite(currentCycle: totalCycleCount, address: d + 1, data: lo, pc: PC)
     }
 
     // MARK: - PC/WP/ST Helpers
@@ -341,26 +292,6 @@ final class TMS9900: Peripheral {
 
     func triggerInterrupt(level: Int) {
         let vector = UInt16(level * 4)
-
-        // [trace] INT1ENTRY — capture interrupted PC/WP/ST plus full
-        // R0-R15 of the interrupted workspace so we can see exactly
-        // what the cassette ROM's state was when the timer fired.
-        if level == 1 {
-            CassetteTrace.log(currentCycle: totalCycleCount,
-                              event: "INT1ENTRY",
-                              details: String(format: "pc=%04X wp=%04X st=%04X src=?",
-                                              PC, WP, ST))
-            // Read 16 registers of the WP being interrupted.
-            var regs = [UInt16](); regs.reserveCapacity(16)
-            for i in 0..<16 {
-                let addr = Int(WP) + i * 2
-                let hi = core.peekMemoryByte(address: addr)
-                let lo = core.peekMemoryByte(address: addr + 1)
-                regs.append((UInt16(hi) << 8) | UInt16(lo))
-            }
-            CassetteTrace.logRegs(currentCycle: totalCycleCount,
-                                  label: "at=int1", regs: regs)
-        }
 
         idling = false
 
