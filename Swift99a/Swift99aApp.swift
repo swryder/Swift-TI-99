@@ -41,6 +41,7 @@ struct Swift99aApp: App {
     @StateObject private var emulator = Emulator()
     private let memoryMapController = MemoryMapWindowController()
     private let cassetteTransportController = CassetteTransportWindowController()
+    private let crtControlsController = CRTControlsWindowController()
 
     init() {
         // Disable window tabbing before any windows are created
@@ -227,6 +228,11 @@ struct Swift99aApp: App {
                     memoryMapController.showWindow(emulator: emulator)
                 }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
+
+                Button("CRT Effects…") {
+                    crtControlsController.showWindow(emulator: emulator)
+                }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
             }
         }
     }

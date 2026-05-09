@@ -105,8 +105,9 @@ struct ContentView: View {
                         .interpolation(.high)
                         .frame(width: imgW, height: imgH)
 
-                    RoundedVideoLayer(image: displayBuffer.currentFrame,
-                                      cornerRadius: videoCornerRadius)
+                    CRTView(image: displayBuffer.currentFrame,
+                            cornerRadius: videoCornerRadius,
+                            settings: emulator.crtSettings)
                         .frame(width: videoW, height: videoH)
                         .offset(x: imgW * Self.cutoutOriginX + (cutoutW - videoW) / 2,
                                 y: imgH * Self.cutoutOriginY + (cutoutH - videoH) / 2)

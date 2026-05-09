@@ -27,6 +27,11 @@ final class Emulator: ObservableObject {
     let displayBuffer = DisplayBuffer()
     let system = TI994A()
 
+    /// Tunable CRT shader parameters used by the monitor-mode display. Held
+    /// here so a separate controls window can bind to the same instance the
+    /// renderer reads from.
+    let crtSettings = CRTSettings()
+
     /// App-wide key event monitor. Catches keyboard events before the
     /// responder chain so input still reaches the emulator even if the
     /// first responder has wandered off (e.g. after a modal panel closes
