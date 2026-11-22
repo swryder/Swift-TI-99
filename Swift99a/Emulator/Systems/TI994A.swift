@@ -392,16 +392,14 @@ class TI994A: EmulatorSystem {
     func removeCartridge() {
         guard currentCartridge != nil else { return }
 
-        // Unmap cartridge ROM space (restore to DummyPeripheral)
+        // Unmap cartridge ROM space (restore to DummyPeripheral). Go through
+        // claimRead/claimWrite so the shadow copy and the fast-path flags are
+        // updated too; otherwise reads keep returning the old ROM. Wait states
+        // are left as they are.
         if pCartROM != nil {
             for idx in 0x6000..<0x8000 {
-                memorySpaceRead[idx] = PeripheralMap()
-                memorySpaceWrite[idx] = PeripheralMap()
-            }
-            // Restore wait states for this region
-            for idx in 0x6000..<0x8000 {
-                memorySpaceRead[idx].updateMap(who: nil, addr: -1, waitStates: 2)
-                memorySpaceWrite[idx].updateMap(who: nil, addr: -1, waitStates: 2)
+                _ = claimRead(sysAddr: idx, peripheral: DummyPeripheral.shared, periphAddr: 0)
+                _ = claimWrite(sysAddr: idx, peripheral: DummyPeripheral.shared, periphAddr: 0)
             }
             _ = pCartROM?.cleanup()
             pCartROM = nil
